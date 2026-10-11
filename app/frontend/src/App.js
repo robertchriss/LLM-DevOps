@@ -1,216 +1,135 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
+import { Link, Routes, Route, useNavigate } from 'react-router-dom';
 
 const App = () => {
   const [lessons, setLessons] = useState([]);
-  const [activeTab, setActiveTab] = useState('lesson');
-  const [quizData, setQuizData] = useState([]);
-  const [currentQuestion, setCurrentQuestion] = useState(0);
-  const [selectedAnswer, setSelectedAnswer] = useState(null);
-  const [score, setScore] = useState(0);
-  const [showQuizResults, setShowQuizResults] = useState(false);
-  const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [selectedLesson, setSelectedLesson] = useState(null);
+  const [quizMode, setQuizMode] = useState(false);
+  const [quizAnswers, setQuizAnswers] = useState({});
+  const navigate = useNavigate();
 
   useEffect(() => {
-    axios.get('http://localhost:3000/api/lessons')
-      .then((response) => {
+    const fetchLessons = async () => {
+      try {
+        const response = await axios.get('http://localhost:5000/api/lessons');
         setLessons(response.data);
-      })
-      .catch((error) => {
-        setError(error.message);
-      })
-      .finally(() => {
         setLoading(false);
-      });
+      } catch (err) {
+        setError('Failed to fetch lessons');
+        setLoading(false);
+      }
+    };
+    fetchLessons();
   }, []);
 
-  useEffect(() => {
-    axios.get('http://localhost:3000/api/quiz')
-      .then((response) => {
-        setQuizData(response.data);
-      })
-      .catch((error) => {
-        setError(error.message);
-      })
-      .finally(() => {
-        setLoading(false);
-      });
-  }, []);
-
-  const handleAnswerChange = (answerIndex) => {
-    setSelectedAnswer(answerIndex);
-  };
-
-  const handleSubmitAnswer = () => {
-    if (selectedAnswer === quizData[currentQuestion].correct) {
-      setScore((prevScore) => prevScore + 1);
+  const handleQuizSubmit = async () => {
+    if (Object.keys(quizAnswers).length === 0) {
+      alert('Please select an answer for each question');
+      return;
     }
-    setSelectedAnswer(null);
-    setCurrentQuestion((prevQuestion) => prevQuestion + 1);
+    
+    try {
+      await axios.post('http://localhost:5000/api/quiz/submit', {
+        lessonId: selectedLesson._id,
+        answers: quizAnswers
+      });
+      alert('Quiz submitted successfully!');
+      setQuizMode(false);
+    } catch (err) {
+      alert('Failed to submit quiz');
+    }
   };
 
-  const quizContent = (
-    <div>
-      {loading ? (
-        <div>Loading...</div>
-      ) : error ? (
-        <div>Error: {error}</div>
-      ) : (
-        <>
-          {currentQuestion < quizData.length ? (
-            <div className="space-y-4">
-              <h3 className="text-xl font-semibold">
-                Q{currentQuestion + 1}: {quizData[currentQuestion].question}
-              </h3>
-              <div className="space-y-2">
-                {quizData[currentQuestion].options.map((option, index) => (
-                  <div key={index} className="flex items-center space-x-2">
-                    <input
-                      type="radio"
-                      name="answer"
-                      value={index}
-                      checked={selectedAnswer === index}
-                      onChange={() => handleAnswerChange(index)}
-                    />
-                    <label>{option}</label>
-                  </div>
-                ))}
-              </div>
-              <button
-                onClick={handleSubmitAnswer}
-                className="mt-4 bg-blue-500 hover:bg-blue-700 text-white px-4 py-2 rounded"
-              >
-                Submit
-              </button>
-            </div>
-          ) : (
-            <>
-              <h3 className="text-xl font-semibold">Quiz Completed!</h3>
-              <p className="text-gray-700">
-                You scored {Math.round((score / quizData.length) * 100)}%.
-              </p>
-              <button
-                onClick={() => setShowQuizResults(true)}
-                className="mt-4 bg-green-500 hover:bg-green-700 text-white px-4 py-2 rounded"
-              >
-                View Results
-              </button>
-            </>
-          )}
-        </>
-      )}
-    </div>
-  );
-
-  const quizResultsModal = (
-    <div className="fixed inset-0 flex items-center justify-center bg-black bg-opacity-50">
-      <div className="bg-white p-6 rounded shadow-lg">
-        <div className="flex items-center justify-between">
-          <h3 className="text-xl font-semibold">Quiz Results</h3>
-          <span>{score}%</span>
-        </div>
-        {quizData.map((question, index) => (
-          <div key={index} className="border-t pt-4">
-            <div className="flex items-center space-x-2">
-              <span className="text-sm">Q{index + 1}:</span>
-              <span className="font-medium">{question.question}</span>
-            </div>
-            <div className="mt-2">
-              <span className="text-sm">
-                Correct Answer: {question.options[question.correct]}
-              </span>
-              <br />
-              <span className="text-sm text-gray-600">{question.explanation}</span>
-            </div>
-          </div>
-        ))}
-        <button
-          onClick={() => setShowQuizResults(false)}
-          className="mt-4 bg-gray-500 hover:bg-gray-600 text-white px-4 py-2 rounded"
-        >
-          Close
-        </button>
-      </div>
-    </div>
-  );
+  const handleAnswerChange = (questionId, answer) => {
+    setQuizAnswers((prevAnswers) => ({
+      ...prevAnswers,
+      [questionId]: answer,
+    }));
+  };
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      {/* Header */}
-      <header className="bg-white shadow-sm">
-        <div className="max-w-7xl mx-auto px-4 py-4 flex justify-between items-center">
-          <h1 className="text-2xl font-bold text-gray-900">
-            Kubernetes Docs & Quiz Hub
-          </h1>
-          <div className="flex items-center space-x-4">
-            <div className="relative">
-              <span className="absolute right-0 top-0 bg-blue-500 text-white rounded-full px-2 py-1 text-xs">
-                Score: {score}
-              </span>
-              <div className="flex items-center space-x-2">
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4.354a4 4 0 100 5.292M19 9.2l-7 7-7-7" />
-                </svg>
-                <span className="text-gray-700">User Stats</span>
-              </div>
+    <div className="min-h-screen bg-gray-100 flex">
+      {/* Left Sidebar */}
+      <div className="w-64 bg-white h-screen p-4 border-r border-gray-200">
+        <h2 className="text-xl font-bold mb-4">Lessons</h2>
+        <div className="space-y-2">
+          {lessons.map((lesson) => (
+            <div
+              key={lesson._id}
+              className={`p-3 rounded-lg cursor-pointer transition-colors ${selectedLesson?._id === lesson._id ? 'bg-blue-50 border-blue-500' : 'hover:bg-gray-50'}`}
+              onClick={() => {
+                setSelectedLesson(lesson);
+                setQuizMode(false);
+              }}
+            >
+              <h3 className="font-semibold">{lesson.title}</h3>
+              <p className="text-sm text-gray-500">{lesson.description}</p>
             </div>
-          </div>
+          ))}
         </div>
-      </header>
+      </div>
 
-      <div className="max-w-7xl mx-auto px-4 py-8 grid grid-cols-12 gap-8">
-        {/* Sidebar */}
-        <aside className="col-span-3">
-          <div className="space-y-2">
-            <h2 className="text-lg font-semibold mb-4">Lessons</h2>
-            {lessons.length === 0 && !error && (
-              <div className="text-gray-500">No lessons available</div>
-            )}
-            {error && <div className="text-red-500">{error}</div>}
-            {lessons.map((lesson, index) => (
-              <div key={lesson.id} className="p-3 hover:bg-gray-50 rounded cursor-pointer">
-                <h3 className="font-medium">{lesson.title}</h3>
-                <p className="text-sm text-gray-600 mt-1">{lesson.description}</p>
-              </div>
-            ))}
-          </div>
-        </aside>
+      {/* Main Content */}
+      <div className="flex-1 p-8">
+        {loading && <div className="text-center py-12">Loading...</div>}
+        {error && <div className="text-center py-12 text-red-500">{error}</div>}
 
-        {/* Main Content */}
-        <main className="col-span-9">
-          <div className="bg-white rounded-lg p-6 shadow-sm">
-            <div className="flex space-x-4 mb-6">
+        {selectedLesson ? (
+          <div className="max-w-3xl mx-auto">
+            <div className="flex justify-between items-center mb-6">
+              <h2 className="text-2xl font-bold">{selectedLesson.title}</h2>
               <button
-                onClick={() => setActiveTab('lesson')}
-                className={`px-4 py-2 rounded-t-lg ${activeTab === 'lesson' ? 'bg-blue-500 text-white' : 'bg-gray-100 text-gray-600'}`}
+                onClick={() => setQuizMode(!quizMode)}
+                className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors"
               >
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 inline-block mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4.354a4 4 0 100 5.292M19 9.2l-7 7-7-7" />
-                </svg>
-                Lesson Content
-              </button>
-              <button
-                onClick={() => setActiveTab('quiz')}
-                className={`px-4 py-2 rounded-t-lg ${activeTab === 'quiz' ? 'bg-blue-500 text-white' : 'bg-gray-100 text-gray-600'}`}
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 inline-block mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.345 0 2.772-1.756.426-3.78.552-5.751.321a1.724 1.724 0 00-1.065 2.572c-1.543-.94-2.924-2.985-2.37-4.961a1.724 1.724 0 00-2.572-1.065c-1.756-.426-1.756-2.345 0-2.772 1.756-.426 3.78-.552 5.751-.321z" />
-                </svg>
-                Quiz
+                {quizMode ? 'View Lesson' : 'Take Quiz'}
               </button>
             </div>
-            {activeTab === 'lesson' && (
-              <div>
-                <h3 className="text-xl font-semibold">Lesson Content</h3>
-                <p className="text-gray-700">This is where the lesson content would be displayed.</p>
+
+            {quizMode ? (
+              <div className="bg-white p-6 rounded-lg shadow">
+                <h3 className="text-lg font-semibold mb-4">Quiz Time!</h3>
+                <div className="space-y-4">
+                  {selectedLesson.questions.map((question, index) => (
+                    <div key={index} className="space-y-2">
+                      <h4 className="font-medium">{question.text}</h4>
+                      {question.options.map((option, optionIndex) => (
+                        <label key={optionIndex} className="flex items-center space-x-2 cursor-pointer">
+                          <input
+                            type="radio"
+                            name={`question-${index}`}
+                            value={option.text}
+                            checked={quizAnswers[question.id] === option.text}
+                            onChange={(e) => handleAnswerChange(question.id, e.target.value)}
+                            className="form-radio h-4 w-4 text-blue-500"
+                          />
+                          <span className="text-gray-700">{option.text}</span>
+                        </label>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+                <button
+                  onClick={handleQuizSubmit}
+                  className="mt-6 px-6 py-2 bg-green-500 text-white rounded hover:bg-green-600 transition-colors"
+                >
+                  Submit Quiz
+                </button>
+              </div>
+            ) : (
+              <div className="bg-white p-6 rounded-lg shadow">
+                <h3 className="text-lg font-semibold mb-4">Lesson Content</h3>
+                <div dangerouslySetInnerHTML={{ __html: selectedLesson.content }} />
               </div>
             )}
-            {activeTab === 'quiz' && quizContent}
           </div>
-        </main>
+        ) : (
+          <div className="text-center py-12">Please select a lesson</div>
+        )}
       </div>
-      {showQuizResults && quizResultsModal}
     </div>
   );
 };

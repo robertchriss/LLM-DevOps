@@ -225,6 +225,30 @@ Do NOT add conflicting devDependencies or dummy version numbers.
         output_filepath="app/frontend/package.json",
     )
 
+    await process_task(
+    prompt="""
+Write a valid package.json for a React application.
+Use exact pinned dependencies:
+"react": "^18.3.1",
+"react-dom": "^18.3.1",
+"react-router-dom": "^6.22.3",
+"react-scripts": "5.0.1",
+"axios": "^1.6.8",
+"tailwindcss": "^3.4.1"
+Do NOT add conflicting devDependencies or dummy version numbers.
+""",
+    output_filepath="app/frontend/package.json",
+)
+
+    await process_task(
+    prompt="""
+Write a standard src/index.js for a React 18 application using react-router-dom.
+Import React, ReactDOM from 'react-dom/client', BrowserRouter from 'react-router-dom', and App from './App'.
+Render <App /> wrapped inside <BrowserRouter> and <React.StrictMode> into document.getElementById('root').
+""",
+    output_filepath="app/frontend/src/index.js",
+)
+
     print("✅ All application files successfully created under 'app/'!")
 
 
