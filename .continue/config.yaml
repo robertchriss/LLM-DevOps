@@ -1,0 +1,84 @@
+name: Local DevOps & Multi-Agent RAG Stack
+version: 0.0.1
+
+models:
+  # Primary Judge & Complex Task Model (Qwen 32B)
+  - name: Qwen 2.5 32B (Judge / Auto-Fix)
+    provider: ollama
+    model: qwen2.5:32b
+    apiBase: http://localhost:11434
+
+  # Fast General-Purpose & Code Model (Qwen 14B)
+  - name: Qwen 2.5 14B (Fast Code)
+    provider: ollama
+    model: qwen2.5:14b
+    apiBase: http://localhost:11434
+
+  # Deep Reasoning & Step-by-Step Logic Model (DeepSeek R1 14B)
+  - name: DeepSeek R1 14B (Reasoning)
+    provider: ollama
+    model: deepseek-r1:14b
+    apiBase: http://localhost:11434
+
+  # Custom Multi-Agent Bridge Endpoint
+  - name: Agent Bridge Router (Autonomous RAG)
+    provider: openai
+    model: qwen2.5:32b
+    apiBase: http://127.0.0.1:8000/v1
+    apiKey: local
+
+tabAutocompleteModel:
+  name: Qwen 2.5 14B Autocomplete
+  provider: ollama
+  model: qwen2.5:14b
+  apiBase: http://localhost:11434
+
+embeddingsProvider:
+  provider: ollama
+  model: nomic-embed-text
+  apiBase: http://localhost:11434
+
+reranker:
+  name: Local Reranker
+  provider: free-trial
+
+customCommands:
+  - name: create
+    description: Generate a new file using the multi-agent pipeline and save it to disk
+    prompt: "Create the requested file with production-ready code. Return ONLY valid code inside code blocks."
+
+  - name: fix
+    description: Debug and auto-heal runtime stack traces across frontend/backend/db
+    prompt: "Analyze the error log and current code, then provide the corrected executable solution."
+
+  - name: rag
+    description: Query workspace codebase context for architecture or implementation details
+    prompt: "Use workspace context to answer the architectural or implementation question in detail."
+
+# --- CONTEXT PROVIDERS INCLUDING ONLINE DOCS & WEB SEARCH ---
+contextProviders:
+  - name: code
+    params: {}
+  - name: docs
+    params: {}
+  - name: web
+    params: {}
+  - name: diff
+    params: {}
+  - name: terminal
+    params: {}
+  - name: codebase
+    params: {}
+  - name: folder
+    params: {}
+
+# --- ENABLE FILE AND COMMAND TOOLS ---
+tools:
+  - name: create_new_file
+    description: Create a new file at a specified path in the workspace
+  - name: read_file
+    description: Read the contents of a file in the workspace
+  - name: edit_file
+    description: Edit an existing file in the workspace
+  - name: run_terminal_command
+    description: Execute a command in the VS Code terminal
