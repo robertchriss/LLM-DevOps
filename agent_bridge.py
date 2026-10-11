@@ -2,10 +2,19 @@ import os
 import re
 import asyncio
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from litellm import acompletion
 
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 QWEN_14B = "ollama/qwen2.5:14b"
 DEEPSEEK_14B = "ollama/deepseek-r1:14b"
@@ -37,7 +46,10 @@ async def query_llm(model: str, prompt: str, system: str = "You are an expert so
     return res.choices[0].message.content
 
 
-# --- OPENAI-COMPATIBLE ENDPOINTS FOR CONTINUE EXTENSION ---
+@app.get("/")
+async def root():
+    return {"status": "online", "message": "Agent Bridge Running"}
+
 
 @app.get("/v1/models")
 async def list_models():
@@ -57,8 +69,7 @@ async def chat_completions(request: Request):
     messages = data.get("messages", [])
     user_prompt = messages[-1]["content"] if messages else ""
 
-    # Route through multi-agent synthesis if creating/generating code
-    if "create" in user_prompt.lower() or "generate" in user_prompt.lower() or "write" in user_prompt.lower():
+    if any(k in user_prompt.lower() for k in ["create", "generate", "write"]):
         qwen_task = query_llm(QWEN_14B, user_prompt, "Write production-ready code.")
         deepseek_task = query_llm(DEEPSEEK_14B, user_prompt, "Provide architectural logic and code structure.")
         
@@ -90,8 +101,6 @@ Output ONLY executable code inside standard markdown code blocks."""
     }
 
 
-# --- DIRECT TOOL & FILE OPERATION ENDPOINTS ---
-
 @app.post("/api/file/read")
 async def read_file(req: FileActionRequest):
     try:
@@ -120,7 +129,7 @@ async def execute_command(req: CommandRequest):
         qwen_task = query_llm(QWEN_14B, prompt, "Write high-performance production code.")
         deepseek_task = query_llm(DEEPSEEK_14B, prompt, "Analyze requirements and output structured code.")
 
-        q_res, ds_res = await asyncio.gather(qwen_task, deepseek_task)
+        q_res, ds_res = await asyncio.gather(qwen_task, prompt)
 
         judge_prompt = f"""Synthesize the best solution for: "{prompt}"
 --- CANDIDATE A ---

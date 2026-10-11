@@ -5,7 +5,6 @@ import re
 import subprocess
 from litellm import acompletion
 
-# Model aliases pointing to local Ollama instance
 QWEN_14B = "ollama/qwen2.5:14b"
 DEEPSEEK_14B = "ollama/deepseek-r1:14b"
 QWEN_32B = "ollama/qwen2.5:32b"
@@ -17,7 +16,6 @@ async def query_model(
     prompt: str,
     system_prompt: str = "You are an expert AI assistant.",
 ):
-    """Queries local Ollama model asynchronously."""
     try:
         response = await acompletion(
             model=model_name,
@@ -33,7 +31,6 @@ async def query_model(
 
 
 def extract_code(text: str) -> str:
-    """Extracts raw code from markdown code blocks if present."""
     match = re.search(r"```(?:\w+)?\n(.*?)```", text, re.DOTALL)
     if match:
         return match.group(1).strip()
@@ -41,8 +38,6 @@ def extract_code(text: str) -> str:
 
 
 def validate_code(filepath: str, code: str) -> tuple[bool, str]:
-    """Verifies generated code syntax before committing to disk."""
-    # Preserve original extension so Node.js recognizes .js files properly
     base, ext = os.path.splitext(filepath)
     temp_path = f"{base}.tmp{ext}"
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
@@ -50,7 +45,6 @@ def validate_code(filepath: str, code: str) -> tuple[bool, str]:
     with open(temp_path, "w", encoding="utf-8") as f:
         f.write(code)
 
-    # Check JS syntax using node
     if filepath.endswith(".js"):
         res = subprocess.run(
             ["node", "--check", temp_path], capture_output=True, text=True
@@ -59,7 +53,6 @@ def validate_code(filepath: str, code: str) -> tuple[bool, str]:
             os.remove(temp_path)
         return (res.returncode == 0, res.stderr)
 
-    # Check JSON validity
     if filepath.endswith(".json"):
         try:
             json.loads(code)
@@ -75,13 +68,12 @@ def validate_code(filepath: str, code: str) -> tuple[bool, str]:
         os.remove(temp_path)
     return (True, "")
 
+
 async def process_task(prompt: str, output_filepath: str):
-    """Runs 14B models in parallel, routes to 32B Judge, validates syntax, and saves output to disk."""
     print(f"\n==================================================")
     print(f"🚀 Starting Creation Task for: '{output_filepath}'")
     print(f"==================================================")
 
-    # 1. Dispatch Qwen 14B and DeepSeek R1 14B in Parallel
     print("🔄 Dispatching Qwen 14B & DeepSeek R1 14B concurrently...")
     task_qwen = query_model(
         QWEN_14B, prompt, "Write clean, high-performance production code."
@@ -95,7 +87,6 @@ async def process_task(prompt: str, output_filepath: str):
     qwen_res, deepseek_res = await asyncio.gather(task_qwen, task_deepseek)
     print("✅ Received responses from both 14B models!")
 
-    # 2. Route to Qwen 32B Judge for Evaluation
     print("⚖️ Sending both candidates to Qwen 32B to judge & select best code...")
     judge_prompt = f"""
 Compare the following two solutions generated for the task: "{prompt}"
@@ -109,7 +100,7 @@ Compare the following two solutions generated for the task: "{prompt}"
 INSTRUCTIONS:
 1. Compare both solutions for syntax correctness, production readiness, and best practices.
 2. Combine the best elements or choose the superior candidate.
-3. Output ONLY the final complete executable code inside markdown code blocks. Do not include introductory text or explanations outside the block.
+3. Output ONLY the final complete executable code inside markdown code blocks.
 """
 
     final_solution = await query_model(
@@ -117,7 +108,6 @@ INSTRUCTIONS:
     )
     clean_code = extract_code(final_solution)
 
-    # 3. Validation Gate
     is_valid, error = validate_code(output_filepath, clean_code)
 
     if not is_valid:
@@ -134,7 +124,6 @@ INSTRUCTIONS:
         )
         clean_code = extract_code(fixed_solution)
 
-    # 4. Save Clean & Validated Code to Disk
     os.makedirs(os.path.dirname(output_filepath), exist_ok=True)
     with open(output_filepath, "w", encoding="utf-8") as f:
         f.write(clean_code)
@@ -145,7 +134,7 @@ INSTRUCTIONS:
 async def main():
     print("⚡ Starting Full 3-Tier Kubernetes Quiz App Pipeline...")
 
-    # --- TIER 1: DATABASE MIGRATION ---
+    # TIER 1: DATABASE
     await process_task(
         prompt="""
 Write a PostgreSQL SQL migration script.
@@ -160,7 +149,7 @@ Insert seed data into 'lessons' and 'quizzes' for 2 topics: 'Pods' and 'Deployme
         output_filepath="app/db/schema.sql",
     )
 
-    # --- TIER 2: BACKEND API (Node.js/Express) ---
+    # TIER 2: BACKEND API
     await process_task(
         prompt="""
 Write a complete Node.js Express server using the 'pg' module for PostgreSQL and 'cors'.
@@ -180,7 +169,7 @@ Configure connection parameters using environment variables (PGHOST, PGPORT, PGU
         output_filepath="app/backend/package.json",
     )
 
-    # --- TIER 3: FRONTEND UI (React + Tailwind CSS) ---
+    # TIER 3: FRONTEND UI
     await process_task(
         prompt="""
 Write a standard public/index.html for a React single-page app.
@@ -191,9 +180,9 @@ Include viewport meta tag, title "Kubernetes Docs & Quiz Hub", CDN script <scrip
 
     await process_task(
         prompt="""
-Write a standard src/index.js for a React 18 application.
-Import React, ReactDOM from 'react-dom/client', and App from './App'.
-Render App inside React.StrictMode into document.getElementById('root').
+Write a standard src/index.js for a React 18 application using react-router-dom.
+Import React, ReactDOM from 'react-dom/client', BrowserRouter from 'react-router-dom', and App from './App'.
+Render <App /> wrapped inside <BrowserRouter> and <React.StrictMode> into document.getElementById('root').
 """,
         output_filepath="app/frontend/src/index.js",
     )
@@ -217,6 +206,7 @@ Write a valid package.json for a React application.
 Use exact pinned dependencies:
 "react": "^18.3.1",
 "react-dom": "^18.3.1",
+"react-router-dom": "^6.22.3",
 "react-scripts": "5.0.1",
 "axios": "^1.6.8",
 "tailwindcss": "^3.4.1"
@@ -225,33 +215,8 @@ Do NOT add conflicting devDependencies or dummy version numbers.
         output_filepath="app/frontend/package.json",
     )
 
-    await process_task(
-    prompt="""
-Write a valid package.json for a React application.
-Use exact pinned dependencies:
-"react": "^18.3.1",
-"react-dom": "^18.3.1",
-"react-router-dom": "^6.22.3",
-"react-scripts": "5.0.1",
-"axios": "^1.6.8",
-"tailwindcss": "^3.4.1"
-Do NOT add conflicting devDependencies or dummy version numbers.
-""",
-    output_filepath="app/frontend/package.json",
-)
-
-    await process_task(
-    prompt="""
-Write a standard src/index.js for a React 18 application using react-router-dom.
-Import React, ReactDOM from 'react-dom/client', BrowserRouter from 'react-router-dom', and App from './App'.
-Render <App /> wrapped inside <BrowserRouter> and <React.StrictMode> into document.getElementById('root').
-""",
-    output_filepath="app/frontend/src/index.js",
-)
-
     print("✅ All application files successfully created under 'app/'!")
 
 
 if __name__ == "__main__":
     asyncio.run(main())
-    

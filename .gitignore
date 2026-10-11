@@ -4,3 +4,4 @@ app/backend/node_modules/
 .env
 .tmp*
 *.log
+.venv/
