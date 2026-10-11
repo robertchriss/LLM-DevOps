@@ -1,0 +1,20 @@
+{
+  "name": "express-pg-typescript",
+  "version": "1.0.0",
+  "description": "A Node.js Express server with PG and TypeScript",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "express": "^4.17.1",
+    "pg": "^8.5.1"
+  },
+  "devDependencies": {
+    "typescript": "^4.3.2"
+  }
+}
