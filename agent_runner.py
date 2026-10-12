@@ -1,181 +1,151 @@
+"""Development runner for the generated Kubernetes quiz app.
+
+This runner does not silently rewrite application files after runtime failures.
+It reports failures and leaves repair decisions to the orchestrator, keeping the
+working tree reviewable. Configure credentials through environment variables.
+"""
+from __future__ import annotations
+
 import asyncio
 import os
+import shutil
 import subprocess
 import time
-import urllib.request
 import urllib.error
-from litellm import acompletion
+import urllib.request
+from pathlib import Path
 
-# Model configurations matching your local setup
-QWEN_32B = "ollama/qwen2.5:32b"
-OLLAMA_BASE = "http://localhost:11434"
+ROOT = Path(__file__).resolve().parent
+DB_CONTAINER = os.getenv("LLM_DEVOPS_DB_CONTAINER", "k8s-quiz-db")
+DB_IMAGE = os.getenv("LLM_DEVOPS_DB_IMAGE", "postgres:15-alpine")
+PGUSER = os.getenv("PGUSER", "llm_devops")
+PGPASSWORD = os.getenv("PGPASSWORD", "")
+PGDATABASE = os.getenv("PGDATABASE", "k8s_quiz")
+PGPORT = os.getenv("PGPORT", "5432")
+BACKEND_PORT = os.getenv("PORT", "5000")
+STARTUP_TIMEOUT_SECONDS = int(os.getenv("LLM_DEVOPS_STARTUP_TIMEOUT", "30"))
 
 
-def ensure_postgres_running():
-    """Checks if PostgreSQL Docker container is running, or spins it up."""
-    print("🐳 Verifying PostgreSQL Docker Container...")
-
-    res = subprocess.run(
-        ["docker", "ps", "--filter", "name=k8s-quiz-db", "--format", "{{.Names}}"],
-        capture_output=True,
-        text=True,
+def run_checked(command: list[str], *, cwd: Path | None = None, timeout: int = 120) -> subprocess.CompletedProcess:
+    if not shutil.which(command[0]):
+        raise RuntimeError(f"Required executable not found: {command[0]}")
+    return subprocess.run(
+        command, cwd=str(cwd or ROOT), capture_output=True, text=True,
+        timeout=timeout, check=True, shell=False,
     )
 
-    if "k8s-quiz-db" in res.stdout:
-        print("✅ PostgreSQL container is already running.")
-    else:
-        stopped_res = subprocess.run(
-            ["docker", "ps", "-a", "--filter", "name=k8s-quiz-db", "--format", "{{.Names}}"],
-            capture_output=True,
-            text=True,
+
+def ensure_postgres_running() -> None:
+    """Start/create a local development DB. Password must be explicitly configured."""
+    if not PGPASSWORD:
+        raise RuntimeError(
+            "Set PGPASSWORD in your environment before starting PostgreSQL. "
+            "The runner intentionally has no hardcoded database password."
         )
-        if "k8s-quiz-db" in stopped_res.stdout:
-            print("🔄 Starting existing PostgreSQL container...")
-            subprocess.run(["docker", "start", "k8s-quiz-db"], check=True)
+    if not shutil.which("docker"):
+        raise RuntimeError("Docker CLI is required to manage the development database.")
+
+    running = run_checked([
+        "docker", "ps", "--filter", f"name=^{DB_CONTAINER}$", "--format", "{{.Names}}"
+    ])
+    if DB_CONTAINER in running.stdout.splitlines():
+        print(f"PostgreSQL container {DB_CONTAINER} is already running.")
+    else:
+        existing = run_checked([
+            "docker", "ps", "-a", "--filter", f"name=^{DB_CONTAINER}$", "--format", "{{.Names}}"
+        ])
+        if DB_CONTAINER in existing.stdout.splitlines():
+            run_checked(["docker", "start", DB_CONTAINER])
         else:
-            print("🚀 Creating and launching new PostgreSQL container...")
-            subprocess.run(
-                [
-                    "docker", "run", "-d",
-                    "--name", "k8s-quiz-db",
-                    "-p", "5432:5432",
-                    "-e", "POSTGRES_USER=postgres",
-                    "-e", "POSTGRES_PASSWORD=postgres",
-                    "-e", "POSTGRES_DB=k8s_quiz",
-                    "postgres:15-alpine",
-                ],
-                check=True,
-            )
-            time.sleep(4)  # Wait for DB engine startup
-
-    # Apply database schema migration
-    print("📜 Seeding database schema from app/db/schema.sql...")
-    schema_path = os.path.join("app", "db", "schema.sql")
-
-    if os.path.exists(schema_path):
-        with open(schema_path, "r", encoding="utf-8") as f:
-            schema_sql = f.read()
-
-        subprocess.run(
-            ["docker", "exec", "-i", "k8s-quiz-db", "psql", "-U", "postgres", "-d", "k8s_quiz"],
-            input=schema_sql,
-            text=True,
-            check=True,
+            # Publish only to loopback; don't expose the development DB on all interfaces.
+            run_checked([
+                "docker", "run", "-d", "--name", DB_CONTAINER,
+                "-p", f"127.0.0.1:{PGPORT}:5432",
+                "-e", f"POSTGRES_USER={PGUSER}",
+                "-e", f"POSTGRES_PASSWORD={PGPASSWORD}",
+                "-e", f"POSTGRES_DB={PGDATABASE}",
+                DB_IMAGE,
+            ])
+    schema_path = ROOT / "app" / "db" / "schema.sql"
+    if schema_path.is_file():
+        # For a dev runner this applies the schema. Prefer versioned migrations in production.
+        with schema_path.open("r", encoding="utf-8") as handle:
+            schema_sql = handle.read()
+        proc = subprocess.run(
+            ["docker", "exec", "-i", DB_CONTAINER, "psql", "-v", "ON_ERROR_STOP=1",
+             "-U", PGUSER, "-d", PGDATABASE],
+            input=schema_sql, text=True, capture_output=True, timeout=60, check=False, shell=False,
         )
-        print("✅ Database schema successfully seeded!")
-    else:
-        print(f"⚠️ Schema file not found at '{schema_path}'. Skipping initial seeding.")
-
-
-async def query_judge_fix(file_path: str, current_code: str, error_log: str) -> str:
-    """Sends runtime errors back to Qwen 32B to generate a bugfix patch."""
-    prompt = (
-        f"The application file '{file_path}' failed during runtime execution.\n\n"
-        f"CURRENT CODE:\n{current_code}\n\n"
-        f"RUNTIME ERROR / LOGS:\n{error_log}\n\n"
-        "INSTRUCTIONS:\n"
-        "Analyze the error and fix the code completely.\n"
-        "Return ONLY the updated code inside markdown code blocks. Do not write introductory text."
-    )
-
-    response = await acompletion(
-        model=QWEN_32B,
-        messages=[
-            {"role": "system", "content": "You are an expert full-stack debugger and auto-healing agent."},
-            {"role": "user", "content": prompt},
-        ],
-        api_base=OLLAMA_BASE,
-    )
-    raw = response.choices[0].message.content
-    if "```" in raw:
-        lines = raw.split("```")[1].split("\n")
-        if lines[0].strip() in ["javascript", "js", "json", "html", "css", "python"]:
-            lines = lines[1:]
-        return "\n".join(lines).strip()
-    return raw.strip()
+        if proc.returncode:
+            raise RuntimeError(f"Database schema application failed:\n{proc.stderr[-4000:]}")
+        print("Database schema applied successfully.")
 
 
 def check_http_endpoint(url: str, timeout: int = 2) -> tuple[bool, str]:
-    """Pings an HTTP endpoint to verify service health."""
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=timeout) as response:
-            if response.status == 200:
-                return True, response.read().decode("utf-8")
-            return False, f"HTTP Status {response.status}"
-    except urllib.error.HTTPError as e:
-        return False, f"HTTP Error {e.code}: {e.reason}"
-    except Exception as e:
-        return False, str(e)
+        request = urllib.request.Request(url, headers={"User-Agent": "LLM-DevOps-dev-runner"})
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            body = response.read(10000).decode("utf-8", errors="replace")
+            return response.status == 200, body
+    except urllib.error.HTTPError as exc:
+        return False, f"HTTP {exc.code}: {exc.reason}"
+    except Exception as exc:
+        return False, str(exc)
 
 
-async def auto_heal_backend():
-    """Boots backend server, monitors runtime, and patches code until HTTP 200 OK."""
-    print("\n🚀 Autonomous Agent: Verifying Backend Server...")
-    max_retries = 3
-    backend_dir = os.path.join(os.getcwd(), "app", "backend")
-    server_file = os.path.join(backend_dir, "server.js")
-
-    for attempt in range(1, max_retries + 1):
-        print(f"🔄 Attempt {attempt}/{max_retries}: Starting Node.js server...")
-        process = subprocess.Popen(
-            ["node", "server.js"],
-            cwd=backend_dir,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-
-        time.sleep(3)  # Allow server initialization
-
-        # Check if process crashed immediately
+async def wait_for_health(process: subprocess.Popen, url: str) -> None:
+    deadline = time.monotonic() + STARTUP_TIMEOUT_SECONDS
+    last_message = "No response yet"
+    while time.monotonic() < deadline:
         if process.poll() is not None:
-            _, stderr = process.communicate()
-            print(f"❌ Backend crashed on startup:\n{stderr}")
-            with open(server_file, "r", encoding="utf-8") as f:
-                code = f.read()
-            fixed_code = await query_judge_fix(server_file, code, stderr)
-            with open(server_file, "w", encoding="utf-8") as f:
-                f.write(fixed_code)
-            continue
+            raise RuntimeError(f"Backend exited with code {process.returncode}")
+        healthy, message = check_http_endpoint(url)
+        if healthy:
+            print(f"Backend health check passed: {url} ({message})")
+            return
+        last_message = message
+        await asyncio.sleep(1)
+    raise TimeoutError(f"Backend did not become healthy within {STARTUP_TIMEOUT_SECONDS}s: {last_message}")
 
-        # Probe health endpoint
-        is_healthy, msg = check_http_endpoint("http://localhost:5000/healthz")
-        if is_healthy:
-            print("✅ Backend server is online and responding on http://localhost:5000!")
-            return process
-        else:
-            print(f"⚠️ Health check failed: {msg}")
+
+async def main() -> None:
+    ensure_postgres_running()
+
+    print("Running the code-generation orchestrator...")
+    run_checked(["python", "orchestrator.py"], cwd=ROOT, timeout=1800)
+
+    backend_dir = ROOT / "app" / "backend"
+    server_file = backend_dir / "server.js"
+    if not server_file.is_file():
+        raise FileNotFoundError(f"Backend file not found: {server_file}")
+
+    if not shutil.which("node"):
+        raise RuntimeError("Node.js is required to start the backend.")
+    process = subprocess.Popen(
+        ["node", "server.js"],
+        cwd=str(backend_dir),
+        stdout=None,
+        stderr=None,
+        shell=False,
+    )
+    try:
+        await wait_for_health(process, f"http://127.0.0.1:{BACKEND_PORT}/healthz")
+        print("Backend is healthy. Functional API and frontend tests still need to be run.")
+        print("Press Ctrl+C to stop the runner.")
+        while process.poll() is None:
+            await asyncio.sleep(1)
+    finally:
+        if process.poll() is None:
             process.terminate()
-            with open(server_file, "r", encoding="utf-8") as f:
-                code = f.read()
-            fixed_code = await query_judge_fix(
-                server_file, code, f"Endpoint ping failed: {msg}"
-            )
-            with open(server_file, "w", encoding="utf-8") as f:
-                f.write(fixed_code)
-
-    raise RuntimeError("Backend auto-healing exceeded maximum retries.")
-
-
-async def main():
-    print("🤖 Initializing Autonomous Multi-Agent Self-Healing Loop...")
-
-    # Step 1: Ensure Postgres DB is active
-    ensure_postgres_running()
-
-    # Step 2: Run code generation pipeline
-    print("\n📦 Generating application code files via orchestrator.py...")
-    subprocess.run(["python", "orchestrator.py"], check=True)
-
-    # Step 3: Re-apply schema in case orchestrator generated new/updated DB tables
-    ensure_postgres_running()
-
-    # Step 4: Auto-heal backend process
-    backend_proc = await auto_heal_backend()
-
-    print("\n🎉 Full pipeline operational! DB is seeded and Backend API is alive on http://localhost:5000")
+            try:
+                process.wait(timeout=8)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("Runner stopped.")

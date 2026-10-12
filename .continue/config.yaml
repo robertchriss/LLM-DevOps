@@ -41,9 +41,9 @@ embeddingsProvider:
 # --- EXPLICIT AGENTS CONFIGURATION ---
 experimental:
   modelRoles:
-    default: Agent Bridge Router (Autonomous RAG)
-    chat: Agent Bridge Router (Autonomous RAG)
-    edit: Qwen 2.5 32B (Judge / Auto-Fix)
+    default: Qwen 2.5 14B (Fast Code)
+    chat: Qwen 2.5 14B (Fast Code)
+    edit: Qwen 2.5 14B (Fast Code)
 
 customCommands:
   - name: create
@@ -83,3 +83,10 @@ tools:
     description: Edit an existing file in the workspace
   - name: run_terminal_command
     description: Execute a command in the VS Code terminal
+
+ignore:
+  - "**/node_modules/**"
+  - "**/.venv/**"
+  - "**/.git/**"
+  - "**/dist/**"
+  - "**/build/**"
