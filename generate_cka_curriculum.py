@@ -3,7 +3,7 @@ import json
 import requests
 import subprocess
 
-# Query Ollama directly for fast batch generation
+# Query Ollama directly for fast batch curriculum generation
 OLLAMA_URL = "http://localhost:11434/api/generate"
 
 CKA_TOPICS = [
