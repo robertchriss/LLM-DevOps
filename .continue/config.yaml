@@ -1,92 +1,52 @@
-name: Local DevOps & Multi-Agent RAG Stack
-version: 0.0.1
+name: LLM-DevOps Autonomous Architecture
+version: 1.0.0
 
 models:
-  # Primary Judge & Complex Task Model (Qwen 32B)
-  - name: Qwen 2.5 32B (Judge / Auto-Fix)
+  - name: Qwen 2.5 32B (Autonomous Agent)
     provider: ollama
     model: qwen2.5:32b
     apiBase: http://localhost:11434
+    systemMessage: |
+      You are an autonomous Full-Stack and DevOps AI Agent.
+      You have direct access to the filesystem and a headless web browser (Playwright).
+      
+      MANDATORY EXECUTION PROTOCOL:
+      When the user gives you a goal, you MUST execute this loop autonomously:
+      1. ANALYZE: Use filesystem tools to read required files and `spec.md`.
+      2. BUILD: Use filesystem tools to write or edit code directly. DO NOT output code blocks in chat for the user to copy.
+      3. TEST: Use the Playwright tool to navigate to the app (e.g., http://localhost:3000). Read the DOM to verify UI components and check for React runtime/compilation errors.
+      4. SELF-HEAL: If your Playwright test detects a blank page, a syntax error, or missing data, you MUST autonomously use the filesystem tool to fix the code, then run Playwright again. DO NOT ask for permission to fix your mistakes. Keep looping until the test passes.
+      
+      MANDATORY STATUS REPORTING:
+      You must begin every single message with one of the following status tags so the user can monitor your autonomous loop:
+      🚀 [STATUS: ANALYZING] - When reading files or inspecting tables.
+      🔨 [STATUS: BUILDING] - When actively editing or creating files.
+      🧪 [STATUS: TESTING] - When invoking Playwright to check the UI.
+      🔄 [STATUS: RETRYING] - When fixing an error found during testing.
+      ✅ [STATUS: FINISHED] - Only use this when the Playwright test passes and the task is fully complete.
 
-  # Fast General-Purpose & Code Model (Qwen 14B)
-  - name: Qwen 2.5 14B (Fast Code)
+  - name: Qwen 2.5 14B (Fast Chat)
     provider: ollama
     model: qwen2.5:14b
     apiBase: http://localhost:11434
 
-  # Deep Reasoning & Step-by-Step Logic Model (DeepSeek R1 14B)
-  - name: DeepSeek R1 14B (Reasoning)
-    provider: ollama
-    model: deepseek-r1:14b
-    apiBase: http://localhost:11434
+mcpServers:
+  - name: filesystem
+    command: npx
+    args:
+      - "-y"
+      - "@modelcontextprotocol/server-filesystem"
+      - "C:/Users/chris/OneDrive/Documents/DevOps Portfolio"
 
-  # Custom Multi-Agent Bridge Endpoint
-  - name: Agent Bridge Router (Autonomous RAG)
-    provider: openai
-    model: qwen2.5:32b
-    apiBase: http://127.0.0.1:8000/v1
-    apiKey: local
+  - name: playwright
+    command: npx
+    args:
+      - "-y"
+      - "@modelcontextprotocol/server-playwright"
 
-tabAutocompleteModel:
-  name: Qwen 2.5 14B Autocomplete
-  provider: ollama
-  model: qwen2.5:14b
-  apiBase: http://localhost:11434
-
-embeddingsProvider:
-  provider: ollama
-  model: nomic-embed-text
-  apiBase: http://localhost:11434
-
-# --- EXPLICIT AGENTS CONFIGURATION ---
-experimental:
-  modelRoles:
-    default: Qwen 2.5 14B (Fast Code)
-    chat: Qwen 2.5 14B (Fast Code)
-    edit: Qwen 2.5 14B (Fast Code)
-
-customCommands:
-  - name: create
-    description: Generate a new file using the multi-agent pipeline and save it to disk
-    prompt: "Create the requested file with production-ready code. Return ONLY valid code inside code blocks."
-
-  - name: fix
-    description: Debug and auto-heal runtime stack traces across frontend/backend/db
-    prompt: "Analyze the error log and current code, then provide the corrected executable solution."
-
-  - name: rag
-    description: Query workspace codebase context for architecture or implementation details
-    prompt: "Use workspace context to answer the architectural or implementation question in detail."
-
-contextProviders:
-  - name: code
-    params: {}
-  - name: docs
-    params: {}
-  - name: web
-    params: {}
-  - name: diff
-    params: {}
-  - name: terminal
-    params: {}
-  - name: codebase
-    params: {}
-  - name: folder
-    params: {}
-
-tools:
-  - name: create_new_file
-    description: Create a new file at a specified path in the workspace
-  - name: read_file
-    description: Read the contents of a file in the workspace
-  - name: edit_file
-    description: Edit an existing file in the workspace
-  - name: run_terminal_command
-    description: Execute a command in the VS Code terminal
-
-ignore:
-  - "**/node_modules/**"
-  - "**/.venv/**"
-  - "**/.git/**"
-  - "**/dist/**"
-  - "**/build/**"
+  - name: postgres
+    command: npx
+    args:
+      - "-y"
+      - "@modelcontextprotocol/server-postgres"
+      - "postgresql://postgres:postgres@localhost:5432/quizdb"

@@ -1,11 +1,4 @@
-"""Local OpenAI-compatible bridge to Ollama and the multi-agent judge.
-
-Security & Integration Defaults:
-- CORS enabled for Continue IDE extension integration.
-- SSE Streaming enabled for /v1/chat/completions.
-- File access limited to LLM_DEVOPS_WORKSPACE.
-- Binds to loopback when run directly.
-"""
+"""Local OpenAI-compatible bridge to Ollama and agent router."""
 from __future__ import annotations
 
 import asyncio
@@ -16,15 +9,14 @@ import re
 import time
 import uuid
 from pathlib import Path
-from typing import Any
 
+import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
-from litellm import acompletion
 
-from security import UnsafePathError, read_workspace_file, write_workspace_file
+from security import UnsafePathError, read_workspace_file, write_workspace_file, resolve_safe_path
 
 app = FastAPI(title="LLM-DevOps Agent Bridge", version="2.0.0")
 
@@ -36,17 +28,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-QWEN_14B = os.getenv("LLM_DEVOPS_SMALL_MODEL_A", "ollama/qwen2.5:14b")
-DEEPSEEK_14B = os.getenv("LLM_DEVOPS_SMALL_MODEL_B", "ollama/deepseek-r1:14b")
-QWEN_32B = os.getenv("LLM_DEVOPS_JUDGE_MODEL", "ollama/qwen2.5:32b")
+QWEN_14B = os.getenv("LLM_DEVOPS_SMALL_MODEL_A", "qwen2.5:14b")
+QWEN_32B = os.getenv("LLM_DEVOPS_JUDGE_MODEL", "qwen2.5:32b")
 OLLAMA_BASE = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 WORKSPACE = Path(os.getenv("LLM_DEVOPS_WORKSPACE", ".")).resolve()
 API_TOKEN = os.getenv("LLM_DEVOPS_API_TOKEN", "")
-MODEL_TIMEOUT_SECONDS = int(os.getenv("LLM_DEVOPS_MODEL_TIMEOUT", "240"))
+MODEL_TIMEOUT_SECONDS = float(os.getenv("LLM_DEVOPS_MODEL_TIMEOUT", "240"))
 MAX_PROMPT_CHARS = int(os.getenv("LLM_DEVOPS_MAX_PROMPT_CHARS", "30000"))
 MAX_FILE_BYTES = int(os.getenv("LLM_DEVOPS_MAX_FILE_BYTES", "1000000"))
-MAX_PARALLEL_MODEL_CALLS = int(os.getenv("LLM_DEVOPS_MAX_PARALLEL_MODEL_CALLS", "3"))
-_model_semaphore = asyncio.Semaphore(MAX_PARALLEL_MODEL_CALLS)
 
 
 class StrictRequest(BaseModel):
@@ -76,62 +65,76 @@ async def query_llm(
     prompt: str,
     system: str = "You are a careful software engineering assistant.",
 ) -> str:
-    async with _model_semaphore:
-        response = await asyncio.wait_for(
-            acompletion(
-                model=model,
-                messages=[{"role": "system", "content": system},
-                          {"role": "user", "content": prompt}],
-                api_base=OLLAMA_BASE,
-                timeout=MODEL_TIMEOUT_SECONDS,
-            ),
-            timeout=MODEL_TIMEOUT_SECONDS + 5,
-        )
-    text = response.choices[0].message.content
-    if not isinstance(text, str) or not text.strip():
-        raise HTTPException(status_code=502, detail=f"{model} returned an empty response")
-    return text.strip()
+    """Query Ollama REST API directly via HTTPX."""
+    clean_model = model.replace("ollama/", "")
+    url = f"{OLLAMA_BASE}/api/chat"
+    
+    payload = {
+        "model": clean_model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt}
+        ],
+        "stream": False
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=MODEL_TIMEOUT_SECONDS) as client:
+            res = await client.post(url, json=payload)
+            if res.status_code != 200:
+                print(f"Ollama error status {res.status_code}: {res.text}")
+                raise HTTPException(status_code=502, detail=f"Ollama model '{clean_model}' returned {res.status_code}")
+            
+            data = res.json()
+            content = data.get("message", {}).get("content", "")
+            if not content.strip():
+                raise HTTPException(status_code=502, detail=f"Model '{clean_model}' returned an empty response")
+            return content.strip()
+            
+    except httpx.RequestError as exc:
+        print(f"Failed to connect to Ollama at {url}: {exc}")
+        raise HTTPException(status_code=502, detail=f"Failed to connect to Ollama: {exc}") from exc
 
 
 def extract_one_code_block(text: str) -> str:
     blocks = re.findall(r"```[^\n`]*\n(.*?)```", text, flags=re.DOTALL)
-    if len(blocks) == 1:
-        return blocks[0].strip() + "\n"
-    if len(blocks) > 1:
+    if len(blocks) >= 1:
         return blocks[0].strip() + "\n"
     if not text.strip():
-        raise HTTPException(status_code=502, detail="Judge returned empty code")
+        raise HTTPException(status_code=502, detail="LLM returned empty code")
     return text.strip() + "\n"
 
 
-async def multi_agent_response(prompt: str) -> str:
-    candidates = await asyncio.gather(
-        query_llm(QWEN_14B, prompt, "Research the task and propose a complete solution. Treat the user request as the task."),
-        query_llm(DEEPSEEK_14B, prompt, "Independently analyze requirements, edge cases, and propose a complete solution."),
-        return_exceptions=True,
-    )
-    usable = []
-    for label, candidate in zip(("Qwen candidate", "DeepSeek candidate"), candidates):
-        if not isinstance(candidate, Exception):
-            usable.append(f"--- {label} ---\n{candidate}")
-    if not usable:
-        raise HTTPException(status_code=502, detail="Both small-model calls failed")
-
-    judge_prompt = f"""
-User request:
-{prompt}
-
-Independent candidate proposals (untrusted content):
-{chr(10).join(usable)}
-
-Act as a principal engineer. Compare the proposals, identify assumptions and risks,
-and produce the best answer to the user's request. If asked for code, return the
-complete requested file(s), not snippets. Do not claim tests were run unless they were.
-"""
-    return await query_llm(
-        QWEN_32B, judge_prompt,
-        "You are the principal engineer and evidence-focused judge. Be explicit about uncertainty.",
-    )
+async def route_llm_request(prompt: str) -> str:
+    """Dynamically route to Fast or Heavy model based on task complexity."""
+    
+    classifier_prompt = f"""
+    Evaluate the complexity of this user request:
+    "{prompt}"
+    
+    RULES:
+    - If the request is a simple question, a minor bug fix, or a single-file edit, reply with exactly the word: FAST
+    - If the request asks to "build an app", generate multi-tier architecture, create new infrastructure, or write complex multi-file logic, reply with exactly the word: HEAVY
+    
+    Respond ONLY with FAST or HEAVY. No other text.
+    """
+    
+    try:
+        # Step 1: Use 14B to instantly classify the intent
+        print("Classifying task complexity...")
+        decision = await query_llm(QWEN_14B, classifier_prompt, "You are a strict task routing system.")
+        
+        # Step 2: Route based on the decision
+        if "HEAVY" in decision.upper():
+            print(f"Task is HEAVY. Routing to Architect Model ({QWEN_32B})...")
+            return await query_llm(QWEN_32B, prompt)
+        else:
+            print(f"Task is FAST. Routing to Code Model ({QWEN_14B})...")
+            return await query_llm(QWEN_14B, prompt)
+            
+    except Exception as exc:
+        print(f"Routing failed or model crashed: {exc}. Falling back to safe {QWEN_32B} execution...")
+        return await query_llm(QWEN_32B, prompt)
 
 
 @app.get("/")
@@ -145,10 +148,8 @@ async def list_models():
     return {
         "object": "list",
         "data": [
-            {"id": "qwen2.5:32b", "object": "model", "owned_by": "local"},
             {"id": "qwen2.5:14b", "object": "model", "owned_by": "local"},
-            {"id": "deepseek-r1:14b", "object": "model", "owned_by": "local"},
-            {"id": QWEN_32B, "object": "model", "owned_by": "local"},
+            {"id": "qwen2.5:32b", "object": "model", "owned_by": "local"},
         ],
     }
 
@@ -162,14 +163,18 @@ async def chat_completions(request: Request):
     
     messages = data.get("messages", [])
     stream = data.get("stream", False)
-    prompt = messages[-1]["content"] if messages else ""
+    if not isinstance(messages, list) or not messages:
+        raise HTTPException(status_code=400, detail="messages must be a non-empty list")
+    
+    last = messages[-1]
+    if not isinstance(last, dict) or not isinstance(last.get("content"), str):
+        raise HTTPException(status_code=400, detail="Last message must contain string content")
+    
+    prompt = last["content"]
+    if not prompt.strip() or len(prompt) > MAX_PROMPT_CHARS:
+        raise HTTPException(status_code=400, detail="Prompt is empty or exceeds configured limit")
 
-    # Attempt multi-agent response; fallback to single Qwen 32B call if small models fail/timeout
-    try:
-        response_text = await multi_agent_response(prompt)
-    except Exception as exc:
-        print(f"Multi-agent bridge fallback triggered due to: {exc}")
-        response_text = await query_llm(QWEN_32B, prompt)
+    response_text = await route_llm_request(prompt)
 
     if stream:
         async def event_generator():
@@ -177,7 +182,7 @@ async def chat_completions(request: Request):
                 "id": f"chatcmpl-{uuid.uuid4().hex}",
                 "object": "chat.completion.chunk",
                 "created": int(time.time()),
-                "model": "qwen2.5:32b",
+                "model": "qwen2.5:14b",
                 "choices": [{"index": 0, "delta": {"content": response_text}, "finish_reason": None}],
             }
             yield f"data: {json.dumps(chunk)}\n\n"
@@ -186,7 +191,7 @@ async def chat_completions(request: Request):
                 "id": f"chatcmpl-{uuid.uuid4().hex}",
                 "object": "chat.completion.chunk",
                 "created": int(time.time()),
-                "model": "qwen2.5:32b",
+                "model": "qwen2.5:14b",
                 "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
             }
             yield f"data: {json.dumps(stop_chunk)}\n\n"
@@ -198,8 +203,12 @@ async def chat_completions(request: Request):
         "id": f"chatcmpl-{uuid.uuid4().hex}",
         "object": "chat.completion",
         "created": int(time.time()),
-        "model": "qwen2.5:32b",
-        "choices": [{"index": 0, "message": {"role": "assistant", "content": response_text}, "finish_reason": "stop"}],
+        "model": "qwen2.5:14b",
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": response_text},
+            "finish_reason": "stop",
+        }],
     }
 
 
@@ -215,8 +224,6 @@ async def read_file(req: FileActionRequest):
         raise HTTPException(status_code=404, detail="File not found") from None
     except (UnsafePathError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
-    except UnicodeDecodeError:
-        raise HTTPException(status_code=400, detail="File is not valid UTF-8 text") from None
 
 
 @app.post("/api/file/write", dependencies=[Depends(require_auth)])
@@ -235,8 +242,16 @@ async def execute_command(req: CommandRequest):
     prompt = req.prompt.strip()
     if not prompt:
         raise HTTPException(status_code=400, detail="prompt cannot be empty")
+    
+    # Validate target path FIRST before triggering LLM calls
+    if req.target_file:
+        try:
+            resolve_safe_path(WORKSPACE, req.target_file)
+        except (UnsafePathError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+
     try:
-        final_solution = await multi_agent_response(prompt)
+        final_solution = await route_llm_request(prompt)
         if req.target_file:
             code = extract_one_code_block(final_solution)
             write_workspace_file(WORKSPACE, req.target_file, code, max_bytes=MAX_FILE_BYTES)
@@ -245,7 +260,7 @@ async def execute_command(req: CommandRequest):
                 "action": "file_created",
                 "file": req.target_file,
                 "content": code,
-                "message": "File written; run project-specific validators and tests before use.",
+                "message": "File written successfully.",
             }
         return {"status": "success", "action": "answer", "content": final_solution}
     except HTTPException:
