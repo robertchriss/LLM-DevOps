@@ -57,11 +57,15 @@ def test_snooze_and_resume_are_persisted(tmp_path, monkeypatch):
     assert resumed["snoozed_until"] is None
 
 
-def test_settle_hides_task_from_default_inbox(tmp_path, monkeypatch):
+def test_settle_hides_task_but_preserves_worktree(tmp_path, monkeypatch):
     manager = make_manager(tmp_path, monkeypatch)
     task_id = insert_task(manager, status="ready_for_review")
+    worktree = tmp_path / "worktree-to-preserve"
+    worktree.mkdir()
+    manager._update(task_id, worktree=str(worktree), branch="agent/task-test")
     settled = manager.settle(task_id)
     assert settled["settled"] is True
     assert settled["status"] == "settled"
+    assert worktree.exists()
     assert manager.list() == []
     assert manager.list(include_settled=True)[0]["id"] == task_id
