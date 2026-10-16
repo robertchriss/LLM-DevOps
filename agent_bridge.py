@@ -17,6 +17,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from security import UnsafePathError, read_workspace_file, write_workspace_file, resolve_safe_path
+from harness import CodingHarness
 
 app = FastAPI(title="LLM-DevOps Agent Bridge", version="2.0.0")
 
@@ -37,6 +38,31 @@ MODEL_TIMEOUT_SECONDS = float(os.getenv("LLM_DEVOPS_MODEL_TIMEOUT", "240"))
 MAX_PROMPT_CHARS = int(os.getenv("LLM_DEVOPS_MAX_PROMPT_CHARS", "30000"))
 MAX_FILE_BYTES = int(os.getenv("LLM_DEVOPS_MAX_FILE_BYTES", "1000000"))
 
+HARNESS_WORKSPACE = Path(os.getenv("PROJECT_WORKSPACE", str(WORKSPACE))).resolve()
+HARNESS_QUEUE_LIMIT = max(1, int(os.getenv("HARNESS_QUEUE_LIMIT", "8")))
+coding_harness = CodingHarness(
+    root=HARNESS_WORKSPACE,
+    ollama_url=OLLAMA_BASE,
+    fast_model=os.getenv("OLLAMA_FAST_MODEL", "qwen2.5:7b"),
+    worker_models=[
+        model.strip()
+        for model in os.getenv(
+            "OLLAMA_WORKER_MODELS", "qwen2.5:14b,deepseek-r1:14b"
+        ).split(",")
+        if model.strip()
+    ],
+    judge_model=os.getenv("OLLAMA_JUDGE_MODEL", QWEN_32B),
+    use_judge=os.getenv("USE_JUDGE", "true").lower() in {"1", "true", "yes"},
+    max_iterations=int(os.getenv("HARNESS_MAX_ITERATIONS", "3")),
+    max_tasks=int(os.getenv("HARNESS_MAX_TASKS", "12")),
+    command_timeout=int(os.getenv("HARNESS_COMMAND_TIMEOUT", "120")),
+    model_timeout=int(os.getenv("HARNESS_MODEL_TIMEOUT", "180")),
+)
+# The harness edits one shared working tree. Queue runs instead of allowing concurrent
+# writers to race and overwrite one another's file snapshots.
+HARNESS_JOBS: dict[str, dict] = {}
+HARNESS_RUN_LOCK = asyncio.Lock()
+
 
 class StrictRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -50,6 +76,11 @@ class CommandRequest(StrictRequest):
 class FileActionRequest(StrictRequest):
     filepath: str = Field(min_length=1, max_length=500)
     content: str | None = Field(default=None, max_length=MAX_FILE_BYTES)
+
+
+class HarnessRunRequest(StrictRequest):
+    goal: str = Field(min_length=1, max_length=12000)
+    include_web: bool = False
 
 
 async def require_auth(authorization: str | None = Header(default=None)) -> None:
@@ -210,6 +241,86 @@ async def chat_completions(request: Request):
             "finish_reason": "stop",
         }],
     }
+
+
+
+async def _execute_harness_job(run_id: str) -> None:
+    job = HARNESS_JOBS[run_id]
+    # FIFO lock acquisition serializes filesystem writers in the shared workspace.
+    async with HARNESS_RUN_LOCK:
+        job.update(status="running", started_at=time.time())
+        try:
+            result = await coding_harness.run(
+                job["goal"], include_web=job["include_web"], run_id=run_id
+            )
+            job.update(status=result.get("status", "failed"), result=result)
+        except Exception as exc:
+            job.update(status="failed", error=str(exc))
+        finally:
+            job["finished_at"] = time.time()
+
+
+@app.post("/api/harness/runs", status_code=202, dependencies=[Depends(require_auth)])
+async def start_harness_run(req: HarnessRunRequest):
+    goal = req.goal.strip()
+    if not goal:
+        raise HTTPException(status_code=400, detail="goal cannot be empty")
+    active = sum(1 for job in HARNESS_JOBS.values() if job["status"] in {"queued", "running"})
+    if active >= HARNESS_QUEUE_LIMIT:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Harness queue is full ({HARNESS_QUEUE_LIMIT} queued/running jobs).",
+        )
+    # Bound in-memory status history without removing active work.
+    completed = [
+        key for key, job in HARNESS_JOBS.items()
+        if job["status"] not in {"queued", "running"}
+    ]
+    for key in completed[:-100]:
+        HARNESS_JOBS.pop(key, None)
+        coding_harness.runs.pop(key, None)
+        coding_harness.events.pop(key, None)
+    run_id = str(uuid.uuid4())
+    HARNESS_JOBS[run_id] = {
+        "id": run_id, "goal": goal, "include_web": req.include_web,
+        "status": "queued", "created_at": time.time(),
+    }
+    asyncio.create_task(_execute_harness_job(run_id), name=f"harness-{run_id}")
+    return {
+        "id": run_id, "status": "queued",
+        "message": "Task accepted. Runs are queued to prevent concurrent writes to the same workspace.",
+        "status_url": f"/api/harness/runs/{run_id}",
+        "events_url": f"/api/harness/runs/{run_id}/events",
+    }
+
+
+@app.get("/api/harness/runs", dependencies=[Depends(require_auth)])
+async def list_harness_runs():
+    return {
+        "runs": sorted(HARNESS_JOBS.values(), key=lambda item: item["created_at"], reverse=True)
+    }
+
+
+@app.get("/api/harness/runs/{run_id}/events", dependencies=[Depends(require_auth)])
+async def get_harness_run_events(run_id: str):
+    job = HARNESS_JOBS.get(run_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Harness run not found")
+    events = list(coding_harness.events.get(run_id, []))
+    if job["status"] == "queued" and not events:
+        events = [{
+            "id": f"{run_id}:queued", "time": job["created_at"],
+            "event": "queued", "data": {"goal": job["goal"]},
+        }]
+    return {"run_id": run_id, "status": job["status"], "events": events}
+
+
+@app.get("/api/harness/runs/{run_id}", dependencies=[Depends(require_auth)])
+async def get_harness_run(run_id: str):
+    job = HARNESS_JOBS.get(run_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Harness run not found")
+    return {**job, "events": coding_harness.events.get(run_id, [])}
 
 
 @app.post("/api/file/read", dependencies=[Depends(require_auth)])
