@@ -265,6 +265,31 @@ class TaskManager:
             self._update(task_id, status="failed", error=str(exc), finished_at=time.time())
             self._event(task_id, "failed", {"error": str(exc)})
 
+    async def _run_with_progress(self, task_id: str, harness: CodingHarness, goal: str,
+                                include_web: bool, run_id: str | None = None) -> dict[str, Any]:
+        """Relay harness events into durable task history while the model is running."""
+        agent_run_id = run_id or task_id
+        running = asyncio.create_task(harness.run(goal, include_web=include_web, run_id=agent_run_id))
+        cursor = 0
+        try:
+            while not running.done():
+                await asyncio.wait({running}, timeout=1.0)
+                current = harness.events.get(agent_run_id, [])
+                for event in current[cursor:]:
+                    self._event(task_id, "agent_" + str(event.get("event", "progress")),
+                                {"agent_run_id": agent_run_id, **event})
+                cursor = len(current)
+            result = await running
+            current = harness.events.get(agent_run_id, [])
+            for event in current[cursor:]:
+                self._event(task_id, "agent_" + str(event.get("event", "progress")),
+                            {"agent_run_id": agent_run_id, **event})
+            return result
+        except asyncio.CancelledError:
+            running.cancel()
+            await asyncio.gather(running, return_exceptions=True)
+            raise
+
     async def _publish(self, task_id: str, worktree: Path, branch: str) -> None:
         task = self.get(task_id)
         if not task:
@@ -425,7 +450,8 @@ class TaskManager:
         cycle = task.get("review_cycles", 0) + 1
         self._update(task["id"], status="reviewing", review_cycles=cycle, review_digest=digest)
         self._event(task["id"], "pr_repair_started", {"cycle": cycle, "failed_checks": failed})
-        result = await self._new_harness(worktree).run(goal, include_web=False, run_id=f"{task['id']}-review-{cycle}")
+        review_run_id = f"{task['id']}-review-{cycle}"
+        result = await self._run_with_progress(task["id"], self._new_harness(worktree, review_run_id), goal, False, run_id=review_run_id)
         self._update(task["id"], result_json=_dump(result))
         self._event(task["id"], "pr_repair_finished", {"status": result.get("status"), "error": result.get("error")})
         if result.get("status") != "completed":
