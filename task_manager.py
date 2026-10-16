@@ -533,12 +533,3 @@ class TaskManager:
         match = re.search(r"github\.com[:/]([^/]+/[^/.]+)(?:\.git)?$", remote.stdout.strip()) if remote.returncode == 0 else None
         return match.group(1) if match else None
 
-    def _remove_worktree(self, worktree: Path, branch: str | None) -> None:
-        if worktree.exists():
-            self._git("worktree", "remove", "--force", str(worktree))
-        if branch and not self.get_branch_has_remote(branch):
-            self._git("branch", "-D", branch)
-
-    def get_branch_has_remote(self, branch: str) -> bool:
-        result = self._git("ls-remote", "--heads", "origin", branch, timeout=20)
-        return result.returncode == 0 and bool(result.stdout.strip())
