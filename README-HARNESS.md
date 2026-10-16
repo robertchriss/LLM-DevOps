@@ -37,6 +37,8 @@ Start the service:
 python agent_bridge.py
 ~~~
 
+Open http://127.0.0.1:8000/tasks for the inbox dashboard. It lets you submit tasks, see working/review/attention lanes, inspect recent events, retry failed tasks, snooze PR monitoring, and settle tasks out of your inbox. The API remains available for scripts and integrations.
+
 The bridge binds to 127.0.0.1:8000 by default. Set a strong LLM_DEVOPS_API_TOKEN before exposing it beyond loopback. Use a firewall and private network/TLS for remote access. The bridge and Ollama must stay running for unattended local tasks.
 
 For an always-on Linux host, see [deploy/llm-devops-agent.service.example](deploy/llm-devops-agent.service.example) and [deploy/llm-devops-agent.env.example](deploy/llm-devops-agent.env.example). Edit the user and paths, create writable state/worktree directories, install the virtual environment and dependencies, put the real token in a protected environment file with mode 600, then enable the systemd unit. Keep Uvicorn at one worker; this queue is a single-process service. For remote access, prefer a private Tailscale network or Tailscale Serve rather than binding the API to a public interface.
