@@ -181,6 +181,8 @@ class TaskManager:
         task = self.get(task_id)
         if not task:
             raise KeyError("Task not found")
+        if task["status"] in ACTIVE:
+            raise ValueError("Cannot settle an active task; wait for it to stop first")
         self._update(task_id, status="settled", settled=1)
         self._event(task_id, "settled", {})
         if task.get("worktree"):
@@ -215,9 +217,12 @@ class TaskManager:
             finally:
                 self.queue.task_done()
 
-    def _new_harness(self, root: Path) -> CodingHarness:
+    def _new_harness(self, root: Path, task_id: str) -> CodingHarness:
+        db_stem = re.sub(r"[^A-Za-z0-9_-]", "_", task_id)
         return CodingHarness(
             root=root,
+            rag_db_path=self.db_path.parent / f"rag-{db_stem}.sqlite3",
+            research_db_path=self.db_path.parent / f"research-{db_stem}.sqlite3",
             ollama_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
             fast_model=os.getenv("OLLAMA_FAST_MODEL", "qwen2.5:7b"),
             worker_models=[m.strip() for m in os.getenv("OLLAMA_WORKER_MODELS", "qwen2.5:14b,deepseek-r1:14b").split(",") if m.strip()],
@@ -251,7 +256,8 @@ class TaskManager:
                     raise RuntimeError(f"Could not create worktree: {added.stderr.strip()}")
                 self._update(task_id, branch=branch, worktree=str(worktree))
                 self._event(task_id, "worktree_created", {"branch": branch, "path": str(worktree)})
-            result = await self._new_harness(worktree).run(task["goal"], include_web=task["include_web"], run_id=task_id)
+            harness = self._new_harness(worktree, task_id)
+            result = await self._run_with_progress(task_id, harness, task["goal"], task["include_web"])
             self._update(task_id, result_json=_dump(result))
             self._event(task_id, "harness_finished", {"status": result.get("status"), "changed_files": result.get("changed_files", [])})
             if result.get("status") != "completed":
@@ -308,7 +314,7 @@ class TaskManager:
             return
         self._git("add", "-A", cwd=worktree)
         listed = self._git("diff", "--cached", "--name-only", cwd=worktree)
-        unsafe = [p for p in listed.stdout.splitlines() if Path(p).name in SECRET_NAMES]
+        unsafe = [p for p in listed.stdout.splitlines() if Path(p).name in SECRET_NAMES or (Path(p).name.startswith(".env") and not Path(p).name.endswith((".example", ".sample")))]
         if unsafe:
             self._git("reset", cwd=worktree)
             self._update(task_id, status="needs_attention", error=f"Refusing to commit sensitive paths: {unsafe}", finished_at=time.time())
