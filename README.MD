@@ -52,7 +52,7 @@ The output path must be relative to `LLM_DEVOPS_WORKSPACE` (defaults to the curr
 
 ## Autonomous coding tasks (local models)
 
-See [README-HARNESS.md](README-HARNESS.md) for the local Ollama coding harness, background task submission, run-status/event polling, configuration, and safety limitations. Submit work to `POST /api/harness/runs`; tasks are queued against one workspace to avoid concurrent file writes.
+See [ARCHITECTURE-AGENTS.md](ARCHITECTURE-AGENTS.md) for the task system architecture and [README-HARNESS.md](README-HARNESS.md) for setup and API usage. Tasks persist in SQLite, run in separate Git worktrees, use local Ollama models, and can optionally open draft PRs and monitor CI/review feedback. Workers and repair loops are bounded; agents do not auto-merge or deploy.
 
 ## Run the API bridge
 
