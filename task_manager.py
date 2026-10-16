@@ -154,6 +154,7 @@ class TaskManager:
         if not self.started:
             await self.start()
         with self._connect() as con:
+            con.execute("BEGIN IMMEDIATE")
             active = con.execute("SELECT COUNT(*) FROM tasks WHERE status IN ('queued','running','reviewing') AND settled=0").fetchone()[0]
             if active >= self.queue_limit:
                 raise OverflowError(f"Task queue is full ({self.queue_limit} queued/running tasks).")
@@ -391,7 +392,7 @@ class TaskManager:
                 for task in self.list():
                     if task["settled"] or (task.get("snoozed_until") or 0) > time.time():
                         continue
-                    if task["status"] == "pr_open" and task.get("pr_number") and task.get("worktree"):
+                    if task["status"] in {"pr_open", "ready_to_merge"} and task.get("pr_number") and task.get("worktree"):
                         await self._monitor_pr(task)
             except asyncio.CancelledError:
                 raise
@@ -436,7 +437,9 @@ class TaskManager:
         feedback = [{"id": c.get("id"), "state": c.get("state"), "body": c.get("body", ""),
                      "path": c.get("path"), "line": c.get("line")} for c in comments[-50:]]
         decision = str(pr.get("reviewDecision") or "").upper()
-        review_requested_changes = any(str(c.get("state") or "").upper() == "CHANGES_REQUESTED" for c in comments)
+        review_entries = [c for c in comments if c.get("state") and c.get("submitted_at")]
+        latest_review = max(review_entries, key=lambda item: item.get("submitted_at") or "", default={})
+        review_requested_changes = str(latest_review.get("state") or "").upper() == "CHANGES_REQUESTED"
         digest = hashlib.sha256(_dump({"feedback": feedback, "checks": failed, "decision": decision}).encode()).hexdigest()
         if digest == task.get("review_digest"):
             return
