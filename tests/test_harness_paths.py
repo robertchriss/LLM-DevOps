@@ -23,5 +23,5 @@ def test_normalizes_windows_relative_paths(tmp_path):
 
 def test_extracts_json_from_fenced_model_response(tmp_path):
     h = CodingHarness(tmp_path, "http://localhost:11434", "fake", use_judge=False, rag_db_path=tmp_path / "rag.sqlite3", research_db_path=tmp_path / "webcache.sqlite3")
-    parsed = h._extract_json('Plan follows:\n```json\n{"tasks": [], "summary": "ok"}\n```')
-    assert parsed == {"tasks": [], "summary": "ok"}
+    parsed = h._extract_json('Plan follows:\n```json\n{"tasks": [{"id": "T1", "files": ["src/main.py"]}], "summary": "ok"}\n```')
+    assert parsed == {"tasks": [{"id": "T1", "files": ["src/main.py"]}], "summary": "ok"}
