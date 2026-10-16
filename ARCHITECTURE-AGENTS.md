@@ -34,6 +34,7 @@ flowchart TD
 ## Components and responsibilities
 
 - **FastAPI bridge (agent_bridge.py)** — authenticated task endpoints and existing OpenAI-compatible Ollama endpoint. Starts/stops the task manager with the application lifecycle.
+- **Inbox dashboard (task_dashboard.html, served at /tasks)** — a lightweight dependency-free browser UI for submitting tasks, seeing active/review/attention lanes, inspecting events, retrying failures, snoozing PR monitoring, and settling completed work.
 - **Task manager (task_manager.py)** — owns the durable task inbox, SQLite event log, queue limit, worker pool, task retries, settle/snooze controls, worktree lifecycle, optional branch/PR publishing, and bounded PR follow-up.
 - **SQLite task store** — survives API process restarts. Queued tasks are re-enqueued on startup; tasks interrupted mid-execution are explicitly marked interrupted rather than falsely reported as successful. Runtime databases are gitignored.
 - **Worker isolation** — each task gets a distinct Git worktree and branch. Workers may run concurrently without writing to the same checkout. Worker count is configurable and bounded. Worktrees live outside the main repository by default.
