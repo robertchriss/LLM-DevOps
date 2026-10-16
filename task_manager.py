@@ -316,7 +316,7 @@ class TaskManager:
             return
         self._git("add", "-A", cwd=worktree)
         listed = self._git("diff", "--cached", "--name-only", cwd=worktree)
-        unsafe = [p for p in listed.stdout.splitlines() if Path(p).name in SECRET_NAMES or (Path(p).name.startswith(".env") and not Path(p).name.endswith((".example", ".sample")))]
+        unsafe = [p for p in listed.stdout.splitlines() if self._is_sensitive_path(p)]
         if unsafe:
             self._git("reset", cwd=worktree)
             self._update(task_id, status="needs_attention", error=f"Refusing to commit sensitive paths: {unsafe}", finished_at=time.time())
@@ -479,6 +479,13 @@ class TaskManager:
             self._update(task["id"], status="needs_attention", error=check.stderr[-3000:])
             return
         self._git("add", "-A", cwd=worktree)
+        staged_paths = self._git("diff", "--cached", "--name-only", cwd=worktree)
+        unsafe = [p for p in staged_paths.stdout.splitlines() if self._is_sensitive_path(p)]
+        if unsafe:
+            self._git("reset", cwd=worktree)
+            self._update(task["id"], status="needs_attention", error=f"Refusing to commit sensitive paths: {unsafe}")
+            self._event(task["id"], "sensitive_paths_blocked", {"paths": unsafe})
+            return
         staged = self._git("diff", "--cached", "--quiet", cwd=worktree)
         if staged.returncode == 0:
             self._update(task["id"], status="pr_open")
@@ -494,6 +501,17 @@ class TaskManager:
             return
         self._update(task["id"], status="pr_open")
         self._event(task["id"], "pr_repair_pushed", {"commit": commit.stdout.strip()})
+
+    @staticmethod
+    def _is_sensitive_path(path: str) -> bool:
+        name = Path(path).name.lower()
+        if name in SECRET_NAMES:
+            return True
+        if name.startswith(".env") and not name.endswith((".example", ".sample")):
+            return True
+        if Path(name).suffix in {".pem", ".key", ".p12", ".pfx", ".keystore"}:
+            return True
+        return "secret" in name or "credential" in name
 
     def _owner_repo(self, cwd: Path) -> str | None:
         remote = self._git("remote", "get-url", "origin", cwd=cwd)
