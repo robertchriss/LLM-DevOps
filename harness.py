@@ -103,17 +103,29 @@ class CodingHarness:
         return resolved.relative_to(self.root).as_posix()
 
     def _extract_json(self, text: str) -> dict[str, Any]:
+        # Models sometimes wrap nested JSON in prose or Markdown fences. raw_decode
+        # handles nested objects correctly; a non-greedy brace regex does not.
         candidates = [text.strip()]
-        match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.S | re.I)
-        if match:
-            candidates.insert(0, match.group(1))
+        fence = re.search(r"```(?:json)?\s*(.*?)\s*```", text, re.S | re.I)
+        if fence:
+            candidates.insert(0, fence.group(1).strip())
+        decoder = json.JSONDecoder()
         for candidate in candidates:
             try:
                 value = json.loads(candidate)
                 if isinstance(value, dict):
                     return value
             except json.JSONDecodeError:
-                continue
+                pass
+            for index, char in enumerate(candidate):
+                if char != "{":
+                    continue
+                try:
+                    value, _ = decoder.raw_decode(candidate[index:])
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(value, dict):
+                    return value
         raise HarnessError("Model did not return valid JSON.")
 
     async def _plan(self, goal: str, context: str) -> dict[str, Any]:
