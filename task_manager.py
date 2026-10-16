@@ -150,6 +150,8 @@ class TaskManager:
         goal = goal.strip()
         if not goal:
             raise ValueError("goal cannot be empty")
+        if not self.started:
+            await self.start()
         with self._connect() as con:
             active = con.execute("SELECT COUNT(*) FROM tasks WHERE status IN ('queued','running','reviewing') AND settled=0").fetchone()[0]
             if active >= self.queue_limit:
@@ -158,8 +160,6 @@ class TaskManager:
             con.execute("INSERT INTO tasks(id,goal,include_web,status,created_at,updated_at) VALUES(?,?,?,'queued',?,?)",
                         (task_id, goal, int(include_web), now, now))
         self._event(task_id, "queued", {"goal": goal})
-        if not self.started:
-            await self.start()
         await self.queue.put(task_id)
         return {"id": task_id, "status": "queued", "status_url": f"/api/harness/runs/{task_id}",
                 "events_url": f"/api/harness/runs/{task_id}/events"}
@@ -170,10 +170,10 @@ class TaskManager:
             raise KeyError("Task not found")
         if task["status"] in ACTIVE:
             raise ValueError("Task is already active")
-        self._update(task_id, status="queued", error=None, finished_at=None, settled=0, snoozed_until=None)
-        self._event(task_id, "retry_queued", {})
         if not self.started:
             await self.start()
+        self._update(task_id, status="queued", error=None, finished_at=None, settled=0, snoozed_until=None)
+        self._event(task_id, "retry_queued", {})
         await self.queue.put(task_id)
         return self.get(task_id) or {}
 
@@ -241,9 +241,11 @@ class TaskManager:
             if worktree is None or not worktree.exists():
                 suffix = task_id.replace("-", "")[:10]
                 branch, worktree = f"agent/task-{suffix}", self.worktree_root / suffix
-                base = self._git("rev-parse", "--verify", "HEAD")
+                remote_head = self._git("symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+                base_ref = remote_head.stdout.strip() if remote_head.returncode == 0 else "HEAD"
+                base = self._git("rev-parse", "--verify", base_ref)
                 if base.returncode:
-                    raise RuntimeError(f"Not a Git repository: {base.stderr.strip()}")
+                    raise RuntimeError(f"Could not resolve task base {base_ref!r}: {base.stderr.strip()}")
                 added = self._git("worktree", "add", "-b", branch, str(worktree), base.stdout.strip())
                 if added.returncode:
                     raise RuntimeError(f"Could not create worktree: {added.stderr.strip()}")
