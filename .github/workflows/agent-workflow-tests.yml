@@ -23,3 +23,16 @@ jobs:
         run: python -m pip install -r requirements-harness.txt
       - name: Run isolated harness and task manager tests
         run: python -m pytest -q tests/test_harness_paths.py tests/test_task_manager.py
+      - name: Smoke test bridge imports and dashboard JavaScript
+        run: |
+          python -m compileall -q agent_bridge.py harness.py task_manager.py security.py
+          python -c "import agent_bridge; assert any(getattr(route, 'path', None) == '/tasks' for route in agent_bridge.app.routes)"
+          python - <<'PY'
+          import re
+          from pathlib import Path
+          html = Path("task_dashboard.html").read_text(encoding="utf-8")
+          match = re.search(r"<script>(.*?)</script>", html, re.S)
+          assert match, "dashboard script missing"
+          Path("/tmp/task-dashboard.js").write_text(match.group(1), encoding="utf-8")
+          PY
+          node --check /tmp/task-dashboard.js
