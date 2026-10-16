@@ -82,7 +82,8 @@ class TaskManager:
         item = dict(row)
         item["include_web"] = bool(item["include_web"])
         item["settled"] = bool(item["settled"])
-        item["result"] = json.loads(item.pop("result_json")) if item.get("result_json") else None
+        raw_result = item.pop("result_json")
+        item["result"] = json.loads(raw_result) if raw_result else None
         item["review_digest"] = item.pop("review_digest", None)
         return item
 
@@ -373,7 +374,7 @@ class TaskManager:
             return result.stdout.strip().split("/", 1)[-1]
         remote_head = self._git("ls-remote", "--symref", "origin", "HEAD", timeout=20)
         if remote_head.returncode == 0:
-            match = re.search(r"ref: refs/heads/([^\\s]+)\\s+HEAD", remote_head.stdout)
+            match = re.search(r"ref: refs/heads/([^\s]+)\s+HEAD", remote_head.stdout)
             if match:
                 return match.group(1)
         return "main"
