@@ -13,7 +13,7 @@ from pathlib import Path
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from security import UnsafePathError, read_workspace_file, write_workspace_file, resolve_safe_path
@@ -52,6 +52,11 @@ async def start_task_manager() -> None:
 @app.on_event("shutdown")
 async def stop_task_manager() -> None:
     await task_manager.stop()
+
+
+@app.get("/tasks", include_in_schema=False)
+async def task_dashboard():
+    return FileResponse(Path(__file__).with_name("task_dashboard.html"), media_type="text/html")
 
 
 class StrictRequest(BaseModel):
