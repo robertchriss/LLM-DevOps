@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LLM-DevOps · Task Inbox</title>
+<style>
+:root{color-scheme:dark;--bg:#0b1020;--panel:#131b2e;--line:#26324a;--text:#e8eef9;--muted:#9aa9c2;--accent:#8cb4ff;--good:#86d8ac;--bad:#ff9b9b}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 system-ui,sans-serif}main{max-width:1200px;margin:auto;padding:26px 16px 60px}
+header,.row,.actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}header{justify-content:space-between}h1{font-size:28px;margin:0 0 5px}h2{font-size:16px;margin:0 0 12px}.muted,small{color:var(--muted)}a{color:var(--accent)}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;margin-top:16px}textarea,input[type=password]{width:100%;background:#0d1425;border:1px solid var(--line);border-radius:8px;color:var(--text);padding:10px;font:inherit}textarea{min-height:90px;resize:vertical}
+button{background:#263d63;border:1px solid #3e5d8c;border-radius:8px;color:white;padding:8px 11px;font:inherit;cursor:pointer}button.secondary{background:#19243a;border-color:var(--line)}button.danger{background:#4a2632}button:disabled{opacity:.5}
+.grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-top:16px}.task{border:1px solid var(--line);background:#11192b;border-radius:10px;padding:12px;margin-bottom:10px;overflow-wrap:anywhere}
+.task h3{font-size:14px;line-height:1.45;margin:0 0 7px}.meta{font-size:12px;color:var(--muted);margin:6px 0}.status{display:inline-block;border:1px solid var(--line);border-radius:99px;padding:2px 8px;font-size:11px;color:var(--accent);margin-bottom:8px}.status.failed,.status.needs_attention,.status.interrupted{color:var(--bad)}
+.status.ready_to_merge,.status.merged,.status.completed{color:var(--good)}.actions{margin-top:10px}.actions button{font-size:12px;padding:5px 8px}.events{font-size:12px;color:var(--muted);white-space:pre-wrap;max-height:220px;overflow:auto;margin-top:10px}
+#notice{margin-top:10px;color:var(--muted);min-height:1.5em}.error{color:var(--bad)!important}
+@media(max-width:850px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:600px){.grid{grid-template-columns:1fr}}
+</style></head>
+<body><main>
+<header><div><h1>Task inbox</h1><div class="muted">Launch work, let local agents run in isolated Git worktrees, and return when something needs attention.</div></div><div class="row"><button id="refresh" class="secondary">Refresh</button><span id="updated" class="muted">Not loaded</span></div></header>
+<section class="panel"><h2>Start a task</h2><form id="newTask">
+<label for="goal">Describe the problem or desired outcome.</label>
+<textarea id="goal" maxlength="12000" required placeholder="Investigate the failing API route, fix the root cause, add regression tests, and verify the change."></textarea>
+<div class="row"><label><input type="checkbox" id="web"> Include optional web research</label><button id="submit" type="submit">Start in background</button></div></form><div id="notice" role="status"></div></section>
+<section class="panel"><h2>Connection</h2><div class="muted">If LLM_DEVOPS_API_TOKEN is configured, enter it here. It is kept in this tab's session storage only. Never expose this dashboard publicly without authentication and private-network controls.</div><div class="row" style="margin-top:10px"><input id="token" type="password" autocomplete="off" placeholder="API bearer token (optional)" style="flex:1;min-width:200px"><button id="saveToken" class="secondary">Use token</button><button id="clearToken" class="secondary">Clear</button></div></section>
+<div class="grid">
+<section><h2>Needs attention <span id="countAttention" class="muted">0</span></h2><div id="attention"></div></section>
+<section><h2>Working <span id="countWorking" class="muted">0</span></h2><div id="working"></div></section>
+<section><h2>Review / ready <span id="countReview" class="muted">0</span></h2><div id="review"></div></section>
+</div></main>
+<script>
+(function(){
+  var $=function(id){return document.getElementById(id);};
+  var active=["queued","running","reviewing"];
+  var attention=["needs_attention","failed","interrupted"];
+  var busy=false;
+  $("token").value=sessionStorage.getItem("llm-devops-token")||"";
+  function say(message,isError){$("notice").textContent=message;$("notice").className=isError?"error":"";}
+  function headers(){var h={"Content-Type":"application/json"};var t=$("token").value.trim();if(t)h.Authorization="Bearer "+t;return h;}
+  function api(path,options){options=options||{};options.headers=Object.assign(headers(),options.headers||{});return fetch(path,options).then(function(r){return r.json().catch(function(){return {};}).then(function(b){if(!r.ok)throw new Error(b.detail||r.statusText||"Request failed");return b;});});}
+  function el(tag,cls,text){var n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;}
+  function addButton(parent,label,action,id,secondary){var b=el("button",secondary?"secondary":"",label);b.type="button";b.dataset.action=action;b.dataset.id=id;parent.appendChild(b);return b;}
+  function card(task){
+    var box=el("article","task"),status=el("span","status "+task.status,task.status),title=el("h3","",task.goal);
+    box.append(status,title);
+    box.appendChild(el("div","meta",new Date((task.created_at||0)*1000).toLocaleString()+" · "+task.id.slice(0,8)));
+    if(task.branch)box.appendChild(el("div","meta","Branch: "+task.branch));
+    if(task.result)box.appendChild(el("div","meta","Changed: "+((task.result.changed_files||[]).join(", ")||"none reported")));
+    if(task.error)box.appendChild(el("div","meta error",task.error));
+    var actions=el("div","actions");
+    if(task.pr_url && /^https:\/\/github\.com\//i.test(task.pr_url)){var a=el("a","", "Open PR");a.href=task.pr_url;a.target="_blank";a.rel="noopener noreferrer";actions.appendChild(a);}
+    if(["failed","interrupted","needs_attention"].indexOf(task.status)>=0)addButton(actions,"Retry","retry",task.id,true);
+    if(task.status==="pr_open"||task.status==="ready_to_merge"){addButton(actions,"Snooze 1h","snooze",task.id,true);if(task.snoozed_until)addButton(actions,"Resume","resume",task.id,true);}
+    if(active.indexOf(task.status)<0)addButton(actions,"Settle","settle",task.id,true);
+    addButton(actions,"Events","events",task.id,true);
+    box.appendChild(actions);box.appendChild(el("div","events",""));box.lastChild.hidden=true;
+    return box;
+  }
+  function render(tasks){
+    var groups={attention:[],working:[],review:[]};
+    tasks.forEach(function(t){if(t.settled)return;if(attention.indexOf(t.status)>=0)groups.attention.push(t);else if(active.indexOf(t.status)>=0)groups.working.push(t);else groups.review.push(t);});
+    Object.keys(groups).forEach(function(k){var target=$(k);target.replaceChildren();if(groups[k].length)groups[k].forEach(function(t){target.appendChild(card(t));});else target.appendChild(el("div","muted","Nothing here right now."));$("count"+k[0].toUpperCase()+k.slice(1)).textContent=groups[k].length;});
+    $("updated").textContent="Updated "+new Date().toLocaleTimeString();
+  }
+  function refresh(){if(busy)return;busy=true;api("/api/harness/runs").then(function(d){render(d.runs||[]);}).catch(function(e){say(e.message,true);}).finally(function(){busy=false;});}
+  $("newTask").addEventListener("submit",function(e){e.preventDefault();$("submit").disabled=true;api("/api/harness/runs",{method:"POST",body:JSON.stringify({goal:$("goal").value,include_web:$("web").checked})}).then(function(d){$("goal").value="";say("Task queued: "+d.id);refresh();}).catch(function(e){say(e.message,true);}).finally(function(){$("submit").disabled=false;});});
+  $("refresh").addEventListener("click",refresh);
+  $("saveToken").addEventListener("click",function(){sessionStorage.setItem("llm-devops-token",$("token").value.trim());say("Token saved for this tab session.");refresh();});
+  $("clearToken").addEventListener("click",function(){sessionStorage.removeItem("llm-devops-token");$("token").value="";say("Session token cleared.");refresh();});
+  document.addEventListener("click",function(e){
+    var b=e.target.closest("button[data-action]");if(!b)return;
+    var id=b.dataset.id,action=b.dataset.action,card=b.closest(".task");
+    if(action==="events"){var panel=card.querySelector(".events");if(!panel.hidden){panel.hidden=true;return;}b.disabled=true;api("/api/harness/runs/"+encodeURIComponent(id)+"/events?after=0").then(function(d){panel.textContent=(d.events||[]).slice(-20).map(function(v){return new Date(v.time*1000).toLocaleTimeString()+"  "+v.event+"\n"+JSON.stringify(v.data||{});}).join("\n\n")||"No events yet.";panel.hidden=false;}).catch(function(err){say(err.message,true);}).finally(function(){b.disabled=false;});return;}
+    b.disabled=true;var path="/api/harness/runs/"+encodeURIComponent(id)+"/"+action,body={method:"POST",body:"{}"};
+    if(action==="snooze")body.body=JSON.stringify({seconds:3600});
+    api(path,body).then(function(){say(action==="settle"?"Task settled; remote PRs and branches are kept.":action==="retry"?"Retry queued.":action==="snooze"?"PR monitoring snoozed for one hour.":"Task updated.");refresh();}).catch(function(err){say(err.message,true);}).finally(function(){b.disabled=false;});
+  });
+  refresh();setInterval(refresh,15000);
+})();
+</script></body></html>

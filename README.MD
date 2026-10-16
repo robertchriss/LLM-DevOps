@@ -50,6 +50,10 @@ python orchestrator.py --prompt "Create a FastAPI health endpoint" --output "scr
 
 The output path must be relative to `LLM_DEVOPS_WORKSPACE` (defaults to the current directory).
 
+## Autonomous coding tasks (local models)
+
+See [ARCHITECTURE-AGENTS.md](ARCHITECTURE-AGENTS.md) for the task system architecture and [README-HARNESS.md](README-HARNESS.md) for setup and API usage. Tasks persist in SQLite, run in separate Git worktrees, use local Ollama models, and can optionally open draft PRs and monitor CI/review feedback. Workers and repair loops are bounded; agents do not auto-merge or deploy. Start the bridge and open http://127.0.0.1:8000/tasks for the browser inbox.
+
 ## Run the API bridge
 
 ```bash

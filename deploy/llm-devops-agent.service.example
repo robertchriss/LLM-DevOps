@@ -1,0 +1,27 @@
+# Example systemd unit for a dedicated, always-on Linux coding-agent host.
+# Copy to /etc/systemd/system/llm-devops-agent.service and edit paths/user first.
+# Keep one Uvicorn worker: the SQLite task queue is designed for one service process.
+[Unit]
+Description=LLM-DevOps local coding-agent task service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=llmdevops
+Group=llmdevops
+WorkingDirectory=/opt/LLM-DevOps
+EnvironmentFile=/etc/llm-devops-agent.env
+ExecStart=/opt/LLM-DevOps/.venv/bin/uvicorn agent_bridge:app --host 127.0.0.1 --port 8000 --workers 1
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+KillSignal=SIGINT
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/LLM-DevOps /opt/LLM-DevOps-agent-worktrees /var/lib/llm-devops
+
+[Install]
+WantedBy=multi-user.target

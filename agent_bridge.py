@@ -13,10 +13,11 @@ from pathlib import Path
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from security import UnsafePathError, read_workspace_file, write_workspace_file, resolve_safe_path
+from harness import CodingHarness
 
 app = FastAPI(title="LLM-DevOps Agent Bridge", version="2.0.0")
 
@@ -37,6 +38,26 @@ MODEL_TIMEOUT_SECONDS = float(os.getenv("LLM_DEVOPS_MODEL_TIMEOUT", "240"))
 MAX_PROMPT_CHARS = int(os.getenv("LLM_DEVOPS_MAX_PROMPT_CHARS", "30000"))
 MAX_FILE_BYTES = int(os.getenv("LLM_DEVOPS_MAX_FILE_BYTES", "1000000"))
 
+HARNESS_WORKSPACE = Path(os.getenv("PROJECT_WORKSPACE", str(WORKSPACE))).resolve()
+from task_manager import TaskManager
+
+task_manager = TaskManager(HARNESS_WORKSPACE)
+
+
+@app.on_event("startup")
+async def start_task_manager() -> None:
+    await task_manager.start()
+
+
+@app.on_event("shutdown")
+async def stop_task_manager() -> None:
+    await task_manager.stop()
+
+
+@app.get("/tasks", include_in_schema=False)
+async def task_dashboard():
+    return FileResponse(Path(__file__).with_name("task_dashboard.html"), media_type="text/html")
+
 
 class StrictRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -50,6 +71,11 @@ class CommandRequest(StrictRequest):
 class FileActionRequest(StrictRequest):
     filepath: str = Field(min_length=1, max_length=500)
     content: str | None = Field(default=None, max_length=MAX_FILE_BYTES)
+
+
+class HarnessRunRequest(StrictRequest):
+    goal: str = Field(min_length=1, max_length=12000)
+    include_web: bool = False
 
 
 async def require_auth(authorization: str | None = Header(default=None)) -> None:
@@ -210,6 +236,79 @@ async def chat_completions(request: Request):
             "finish_reason": "stop",
         }],
     }
+
+
+
+@app.post("/api/harness/runs", status_code=202, dependencies=[Depends(require_auth)])
+async def start_harness_run(req: HarnessRunRequest):
+    try:
+        return await task_manager.submit(req.goal, req.include_web)
+    except OverflowError as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from None
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+
+@app.get("/api/harness/runs", dependencies=[Depends(require_auth)])
+async def list_harness_runs(include_settled: bool = False):
+    return {"runs": task_manager.list(include_settled=include_settled)}
+
+
+@app.get("/api/harness/runs/{run_id}/events", dependencies=[Depends(require_auth)])
+async def get_harness_run_events(run_id: str, after: int = 0):
+    task = task_manager.get(run_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return {"run_id": run_id, "status": task["status"], "events": task_manager.events(run_id, after=max(0, after))}
+
+
+@app.get("/api/harness/runs/{run_id}", dependencies=[Depends(require_auth)])
+async def get_harness_run(run_id: str):
+    task = task_manager.get(run_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    task["events"] = task_manager.events(run_id)
+    return task
+
+
+@app.post("/api/harness/runs/{run_id}/retry", dependencies=[Depends(require_auth)])
+async def retry_harness_run(run_id: str):
+    try:
+        return await task_manager.retry(run_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Task not found") from None
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+
+
+@app.post("/api/harness/runs/{run_id}/settle", dependencies=[Depends(require_auth)])
+async def settle_harness_run(run_id: str):
+    try:
+        return task_manager.settle(run_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Task not found") from None
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+
+
+class SnoozeRequest(StrictRequest):
+    seconds: int = Field(default=3600, ge=60, le=2592000)
+
+
+@app.post("/api/harness/runs/{run_id}/snooze", dependencies=[Depends(require_auth)])
+async def snooze_harness_run(run_id: str, req: SnoozeRequest):
+    try:
+        return task_manager.snooze(run_id, req.seconds)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Task not found") from None
+
+
+@app.post("/api/harness/runs/{run_id}/resume", dependencies=[Depends(require_auth)])
+async def resume_harness_run(run_id: str):
+    try:
+        return task_manager.resume(run_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Task not found") from None
 
 
 @app.post("/api/file/read", dependencies=[Depends(require_auth)])

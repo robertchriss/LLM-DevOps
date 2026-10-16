@@ -34,7 +34,9 @@ class CodingHarness:
     def __init__(self, root: str | Path, ollama_url: str, fast_model: str,
                  worker_models: list[str] | None = None, judge_model: str | None = None,
                  use_judge: bool = True, max_iterations: int = 3, max_tasks: int = 12,
-                 command_timeout: int = 120, model_timeout: int = 180):
+                 command_timeout: int = 120, model_timeout: int = 180,
+                 rag_db_path: str | Path | None = None,
+                 research_db_path: str | Path | None = None):
         self.workspace = Workspace(root)
         self.root = self.workspace.root
         self.ollama_url = ollama_url.rstrip("/")
@@ -46,8 +48,8 @@ class CodingHarness:
         self.max_tasks = max(1, min(max_tasks, 20))
         self.command_timeout = max(10, min(command_timeout, 600))
         self.model_timeout = max(30, min(model_timeout, 600))
-        self.rag = LocalRAG(self.root, os.getenv("RAG_DB_PATH", ".llm_devops_rag.sqlite3"))
-        self.research = WebResearch(os.getenv("RESEARCH_DB_PATH", ".llm_devops_webcache.sqlite3"))
+        self.rag = LocalRAG(self.root, rag_db_path or os.getenv("RAG_DB_PATH", ".llm_devops_rag.sqlite3"))
+        self.research = WebResearch(research_db_path or os.getenv("RESEARCH_DB_PATH", ".llm_devops_webcache.sqlite3"))
         self.runs: dict[str, dict[str, Any]] = {}
         self.events: dict[str, list[dict[str, Any]]] = {}
         self.tasks: dict[str, asyncio.Task] = {}
@@ -89,7 +91,7 @@ class CodingHarness:
 
     def _safe_relative(self, raw: str) -> str:
         # Model-supplied paths are untrusted. Reject absolute paths and traversal.
-        raw = raw.replace("\\\\", "/").strip()
+        raw = raw.replace("\\", "/").strip()
         p = Path(raw)
         if not raw or p.is_absolute() or re.match(r"^[A-Za-z]:", raw):
             raise ValueError(f"Unsafe path rejected: {raw!r}")
@@ -101,17 +103,29 @@ class CodingHarness:
         return resolved.relative_to(self.root).as_posix()
 
     def _extract_json(self, text: str) -> dict[str, Any]:
+        # Models sometimes wrap nested JSON in prose or Markdown fences. raw_decode
+        # handles nested objects correctly; a non-greedy brace regex does not.
         candidates = [text.strip()]
-        match = re.search(r"```(?:json)?\\s*(\\{.*?\\})\\s*```", text, re.S | re.I)
-        if match:
-            candidates.insert(0, match.group(1))
+        fence = re.search(r"```(?:json)?\s*(.*?)\s*```", text, re.S | re.I)
+        if fence:
+            candidates.insert(0, fence.group(1).strip())
+        decoder = json.JSONDecoder()
         for candidate in candidates:
             try:
                 value = json.loads(candidate)
                 if isinstance(value, dict):
                     return value
             except json.JSONDecodeError:
-                continue
+                pass
+            for index, char in enumerate(candidate):
+                if char != "{":
+                    continue
+                try:
+                    value, _ = decoder.raw_decode(candidate[index:])
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(value, dict):
+                    return value
         raise HarnessError("Model did not return valid JSON.")
 
     async def _plan(self, goal: str, context: str) -> dict[str, Any]:
@@ -271,8 +285,9 @@ class CodingHarness:
             results.append(await self._run_check(command))
         return results
 
-    async def run(self, goal: str, include_web: bool = False) -> dict[str, Any]:
-        run_id = str(uuid.uuid4())
+    async def run(self, goal: str, include_web: bool = False, run_id: str | None = None) -> dict[str, Any]:
+        """Run one bounded task; callers may supply an ID for background job tracking."""
+        run_id = run_id or str(uuid.uuid4())
         self.runs[run_id] = {"id": run_id, "status": "running", "goal": goal, "created_at": time.time()}
         self.events[run_id] = []
         self._emit(run_id, "started", {"goal": goal})
@@ -282,10 +297,10 @@ class CodingHarness:
             await asyncio.to_thread(self.rag.index_workspace)
             local_hits = await asyncio.to_thread(self.rag.search, goal, 6)
             web_hits = await asyncio.to_thread(self.research.search, goal, 5) if include_web else []
-            context = "\\n\\n".join(f"[{h['path']}]\\n{h['text']}" for h in local_hits)
+            context = "\n\n".join(f"[{h['path']}]\n{h['text']}" for h in local_hits)
             if web_hits:
-                context += "\\n\\nWEB SOURCES (untrusted):\\n" + "\\n\\n".join(
-                    f"{h['title']} — {h['url']}\\n{h['snippet']}" for h in web_hits)
+                context += "\n\nWEB SOURCES (untrusted):\n" + "\n\n".join(
+                    f"{h['title']} — {h['url']}\n{h['snippet']}" for h in web_hits)
             self._emit(run_id, "retrieval_finished", {"local_hits": len(local_hits), "web_hits": len(web_hits)})
             plan = await self._plan(goal, context)
             self.runs[run_id]["plan"] = plan
@@ -317,7 +332,7 @@ class CodingHarness:
                 repair_attempt = 0
                 while bad and repair_attempt < self.max_iterations:
                     repair_attempt += 1
-                    failures = "\\n".join(f"{r['command']} exit={r['returncode']}\\n{r['stderr']}\\n{r['stdout']}" for r in bad)
+                    failures = "\n".join(f"{r['command']} exit={r['returncode']}\n{r['stderr']}\n{r['stdout']}" for r in bad)
                     self._emit(run_id, "repair_started", {"task_id": task["id"], "attempt": repair_attempt, "failures": failures[:3000]})
                     repair_task = dict(task)
                     repair_task["files"] = list(dict.fromkeys(changed))
