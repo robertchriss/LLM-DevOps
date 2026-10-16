@@ -68,7 +68,7 @@ All task endpoints honor LLM_DEVOPS_API_TOKEN if configured. Send Authorization:
 - GET /api/harness/runs/{id} — task state, branch, PR, result, and task data.
 - GET /api/harness/runs/{id}/events?after=0 — durable event log, with monotonically increasing sequence numbers.
 - POST /api/harness/runs/{id}/retry — explicitly retry a failed/interrupted task.
-- POST /api/harness/runs/{id}/settle — remove the task from the inbox and clean up its local worktree if it is not active; remote branches/PRs are not deleted.
+- POST /api/harness/runs/{id}/settle — archive the task out of the default inbox. Local worktrees and branches are preserved so failed or unpushed work is not lost.
 - POST /api/harness/runs/{id}/snooze — body {"seconds":3600}; pauses PR-monitor attention for a bounded period.
 - POST /api/harness/runs/{id}/resume — clear snooze.
 
