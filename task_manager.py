@@ -365,8 +365,12 @@ class TaskManager:
         result = self._git("symbolic-ref", "--short", "refs/remotes/origin/HEAD")
         if result.returncode == 0 and result.stdout.strip():
             return result.stdout.strip().split("/", 1)[-1]
-        result = self._git("branch", "--show-current")
-        return result.stdout.strip() or "main"
+        remote_head = self._git("ls-remote", "--symref", "origin", "HEAD", timeout=20)
+        if remote_head.returncode == 0:
+            match = re.search(r"ref: refs/heads/([^\\s]+)\\s+HEAD", remote_head.stdout)
+            if match:
+                return match.group(1)
+        return "main"
 
     def _pr_body(self, task: dict[str, Any], branch: str) -> str:
         return ("## Agent-generated change\n\n**Task:** " + task["goal"] + "\n\n"
@@ -425,10 +429,11 @@ class TaskManager:
         feedback = [{"id": c.get("id"), "state": c.get("state"), "body": c.get("body", ""),
                      "path": c.get("path"), "line": c.get("line")} for c in comments[-50:]]
         decision = str(pr.get("reviewDecision") or "").upper()
+        review_requested_changes = any(str(c.get("state") or "").upper() == "CHANGES_REQUESTED" for c in comments)
         digest = hashlib.sha256(_dump({"feedback": feedback, "checks": failed, "decision": decision}).encode()).hexdigest()
         if digest == task.get("review_digest"):
             return
-        if not failed and decision != "CHANGES_REQUESTED":
+        if not failed and decision != "CHANGES_REQUESTED" and not review_requested_changes:
             if decision == "APPROVED" and checks and all(
                 str(c.get("conclusion") or c.get("state") or "").upper() in {"SUCCESS", "SUCCEEDED", "NEUTRAL", "SKIPPED"} for c in checks
             ):
