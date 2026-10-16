@@ -1,80 +1,102 @@
-# Autonomous coding harness
+# Autonomous local-agent workflow
 
-This provides a bounded local-model coding loop: retrieve project context → plan → propose complete-file changes → judge → apply → verify → repair. The API bridge can run long tasks in the background and report progress while you work on something else.
+This workflow turns a problem into a persistent background task: create an isolated Git worktree, let local agents plan/edit/review/test, commit only verified changes, optionally open a draft GitHub PR, and monitor CI/review feedback with a bounded repair loop. You can start multiple tasks and check back when they need attention.
 
-## Free/local model setup
+Read [ARCHITECTURE-AGENTS.md](ARCHITECTURE-AGENTS.md) for the full component diagram, lifecycle, and safety boundaries.
 
-The default setup uses Ollama on your own machine. It does not require paid model API keys or usage-based API billing. Downloading and running models still requires disk space, memory, and compute.
+## Free/local setup
 
-Install the Python requirements:
+Install dependencies:
 
-```bash
+~~~bash
 python -m pip install -r requirements-harness.txt
-```
+~~~
 
-Pull the local models you want to use (choose models that fit your hardware):
+Install Ollama and pull models that fit your hardware:
 
-```bash
+~~~bash
 ollama pull qwen2.5:7b
 ollama pull qwen2.5:14b
 ollama pull deepseek-r1:14b
 ollama pull qwen2.5:32b
-```
+~~~
 
-Configure the variables in `.env.harness.example` in your shell before starting the bridge. Python does not load that file automatically. In particular:
+Export the variables in .env.harness.example in your shell before starting the bridge; Python does not load that file automatically. Configure at least:
 
-- `PROJECT_WORKSPACE`: exact repository directory the agent may edit.
-- `OLLAMA_BASE_URL`: local Ollama endpoint.
-- `OLLAMA_FAST_MODEL`, `OLLAMA_WORKER_MODELS`, `OLLAMA_JUDGE_MODEL`: model names already pulled into Ollama.
-- `USE_JUDGE=true`: require a separate judge pass before applying changes.
-- `HARNESS_MAX_ITERATIONS`, `HARNESS_MAX_TASKS`: bound repair and planning loops.
+- PROJECT_WORKSPACE: Git repository root to use as the worktree base.
+- OLLAMA_BASE_URL: local Ollama endpoint.
+- OLLAMA_FAST_MODEL, OLLAMA_WORKER_MODELS, OLLAMA_JUDGE_MODEL: model tags available in Ollama.
+- USE_JUDGE=true: require an independent judge pass before applying each proposed patch.
+- LLM_DEVOPS_TASK_WORKERS: maximum simultaneous worktrees/model tasks (default 2; choose based on RAM/VRAM).
+- LLM_DEVOPS_TASK_DB and LLM_DEVOPS_WORKTREE_ROOT: persistent task state and worktree locations.
+- LLM_DEVOPS_PR_MONITOR=true and LLM_DEVOPS_MAX_REVIEW_CYCLES=3: enable bounded PR follow-up.
 
-Start the bridge:
+Start the service:
 
-```bash
+~~~bash
 python agent_bridge.py
-```
+~~~
 
-The default bind is `127.0.0.1:8000`. Set a strong `LLM_DEVOPS_API_TOKEN` before making the API reachable from another machine. Do not expose it to the public internet without authentication, TLS, firewall restrictions, and a restricted service account.
+The bridge binds to 127.0.0.1:8000 by default. Set a strong LLM_DEVOPS_API_TOKEN before exposing it beyond loopback. Use a firewall and private network/TLS for remote access. The bridge and Ollama must stay running for unattended local tasks.
 
-## Submit a long-running task
+## Submit work and check the inbox
 
-Submit a goal and return immediately with a run ID:
-
-```bash
+~~~bash
 curl -X POST http://127.0.0.1:8000/api/harness/runs \
   -H 'Content-Type: application/json' \
-  -d '{"goal":"Review the API for bugs, add focused tests, and fix issues without changing unrelated behavior.","include_web":false}'
-```
+  -H "Authorization: Bearer $LLM_DEVOPS_API_TOKEN" \
+  -d '{"goal":"Investigate the bug, implement a minimal fix, add regression tests, run verification, and report remaining risks.","include_web":false}'
+~~~
 
-The response includes `id`, `status_url`, and `events_url`. Poll them while the task runs:
+The API returns a task ID immediately. Use it to check progress:
 
-```bash
-curl http://127.0.0.1:8000/api/harness/runs/<RUN_ID>
-curl http://127.0.0.1:8000/api/harness/runs/<RUN_ID>/events
-curl http://127.0.0.1:8000/api/harness/runs
-```
+~~~bash
+curl -H "Authorization: Bearer $LLM_DEVOPS_API_TOKEN" http://127.0.0.1:8000/api/harness/runs
+curl -H "Authorization: Bearer $LLM_DEVOPS_API_TOKEN" http://127.0.0.1:8000/api/harness/runs/<TASK_ID>
+curl -H "Authorization: Bearer $LLM_DEVOPS_API_TOKEN" 'http://127.0.0.1:8000/api/harness/runs/<TASK_ID>/events?after=0'
+~~~
 
-Add the same `Authorization: Bearer <LLM_DEVOPS_API_TOKEN>` header to requests if a token is configured. The events endpoint returns the current event list; poll it periodically to see planning, edits, verification, and repair attempts. `include_web` defaults to false so a normal coding task can stay local and avoid external search.
+The events endpoint returns durable events with sequence numbers; pass ?after=<last-seq> to fetch only newer events.
 
-## Concurrency and task state
+## Task controls
 
-The bridge accepts multiple queued tasks but deliberately runs them one at a time against the configured workspace. This prevents agents from overwriting each other's files. Run status and events are kept in memory, so restarting the bridge loses the history. True parallel execution should use a separate Git worktree or disposable clone per task; do not point multiple independent writers at the same checkout.
+- POST /api/harness/runs/{id}/retry — explicitly retry a failed/interrupted task.
+- POST /api/harness/runs/{id}/settle — remove a completed task from the default inbox and clean up its local worktree. Active tasks cannot be settled.
+- POST /api/harness/runs/{id}/snooze with {"seconds":3600} — pause PR-monitor attention temporarily.
+- POST /api/harness/runs/{id}/resume — resume PR monitoring.
+- GET /api/harness/runs?include_settled=true — include settled tasks.
 
-This implementation does not automatically create, merge, or babysit GitHub pull requests. After reviewing the diff and tests, create a branch/PR using your normal Git workflow. PR automation, independent reviewer agents, and post-merge rollback monitoring are follow-on steps, not features this API claims to provide.
+## Automatic GitHub workflow (optional)
 
-## Safety boundary
+Automatic PR creation requires:
+1. Git installed and the source repository has an origin remote.
+2. Push access to that repository from this machine.
+3. GitHub CLI (gh) installed and authenticated.
+4. CI configured on the repository if you want CI feedback monitored.
 
-The harness rejects absolute paths, traversal, common dependency/build directories, and symlink path components. File changes are written only beneath `PROJECT_WORKSPACE`. Verification commands use argument arrays rather than a shell and have an executable allowlist.
+Successful work is committed on an agent/task-* branch in a separate worktree. If the prerequisites are met, the branch is pushed and a **draft PR** is opened. The monitor checks the PR, review decision, review comments, and CI status. It can run a bounded repair cycle and push a follow-up commit. After the configured repair limit, it changes the task to needs_attention.
 
-**This is not an OS sandbox.** A process launched by an allowed program can still execute project code; test and build scripts may have arbitrary side effects. Run against a trusted repository in a disposable branch/worktree or container. Review the diff and test output before merging. Model approval is not proof of correctness.
+The system **never auto-merges or deploys**. ready_to_merge means the monitor saw an approval and successful checks; review the diff and CI before merging. If gh or push access is unavailable, the task remains ready_for_review with its local branch or pushed branch information.
 
-## Verification
+## Parallelism and recovery
 
-Run the isolated harness/path tests:
+Every task has its own Git worktree and its own retrieval databases. Concurrent agents therefore do not write into the same checkout or index. LLM_DEVOPS_TASK_WORKERS defaults to 2 and is capped to prevent accidental unbounded spawning. Use a value appropriate to your machine; local model memory is often the limiting resource.
 
-```bash
-python -m pytest tests/test_harness_paths.py -q
-```
+Task metadata and events are stored in SQLite. Queued tasks resume after service restart; tasks interrupted during execution are marked interrupted and can be retried. PR monitoring runs only while the bridge is online. The task manager does not silently restart a failed task forever.
 
-The repository also contains tests that expect a running bridge, local Ollama models, browser tooling, or database services; those are integration tests and are not covered by the command above.
+## Safety boundaries
+
+- This uses local Ollama models; it does not need paid inference API keys. Compute, storage, electricity, and model downloads still have costs.
+- A Git worktree is isolation from other agent edits, **not an OS sandbox**. Tests/build scripts can execute code. Use an unprivileged account or disposable container for untrusted repositories.
+- Workspace path validation, command allowlists, independent judging, diff checks, and secret-path checks reduce risk but do not prove code is safe.
+- API bearer auth is optional for backward compatibility. Configure LLM_DEVOPS_API_TOKEN before allowing network access beyond loopback.
+- Generated changes need human review. Do not give agents permission to auto-merge or deploy until you have separate safeguards and rollback procedures.
+- The implementation does not bypass provider quotas, rotate accounts, or route interactive subscriptions through unsupported clients. Use tools within their providers' terms.
+
+## Focused tests
+
+~~~bash
+python -m pytest tests/test_harness_paths.py tests/test_task_manager.py -q
+~~~
+
+Run these tests in your local environment. The task-manager tests use temporary SQLite state and do not require Ollama. I have not claimed a passing test run from GitHub editing alone.
