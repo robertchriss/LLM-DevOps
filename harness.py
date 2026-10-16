@@ -89,7 +89,7 @@ class CodingHarness:
 
     def _safe_relative(self, raw: str) -> str:
         # Model-supplied paths are untrusted. Reject absolute paths and traversal.
-        raw = raw.replace("\\\\", "/").strip()
+        raw = raw.replace("\\", "/").strip()
         p = Path(raw)
         if not raw or p.is_absolute() or re.match(r"^[A-Za-z]:", raw):
             raise ValueError(f"Unsafe path rejected: {raw!r}")
@@ -102,7 +102,7 @@ class CodingHarness:
 
     def _extract_json(self, text: str) -> dict[str, Any]:
         candidates = [text.strip()]
-        match = re.search(r"```(?:json)?\\s*(\\{.*?\\})\\s*```", text, re.S | re.I)
+        match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.S | re.I)
         if match:
             candidates.insert(0, match.group(1))
         for candidate in candidates:
