@@ -7,9 +7,16 @@ OLLAMA_URL = "http://localhost:11434/api/chat"
 MODEL = "qwen2.5:32b"
 
 def extract_code(text: str) -> str:
-    """Extract code from markdown blocks."""
-    blocks = re.findall(r"```(?:javascript|js|jsx)?\n(.*?)```", text, flags=re.DOTALL)
-    return blocks[0].strip() if blocks else text
+    """Extracts code blocks (jsx, js, javascript) from LLM markdown response."""
+    # Matches ```jsx, ```js, ```javascript, or plain ``` code blocks
+    pattern = r"```(?:javascript|jsx|js|react)?\s*\n(.*?)```"
+    matches = re.findall(pattern, text, re.DOTALL)
+    
+    if matches:
+        return matches[0].strip()
+    
+    # If no markdown block exists, attempt to extract clean code or strip bad formatting
+    return text.strip()
 
 def run_harness() -> tuple[bool, str]:
     """Run pytest and capture the output to feed back to the LLM."""
@@ -86,8 +93,20 @@ if __name__ == "__main__":
     ingest_spec_and_docs(["spec.md"])
     
     task = """
-    Write a complete React App component in app/frontend/src/App.js.
-    It must fetch CKA lessons from '/api/lessons' using fetch(), display a lesson list, 
-    and render a 'Take Quiz' section without crashing on undefined maps.
+    Write a modern CKA Learning Dashboard in app/frontend/src/App.js using inline CSS or Tailwind-style clean layout.
+    
+    REQUIREMENTS:
+    1. Sidebar / Header: "CKA Learning Platform" branding with domain category navigation.
+    2. Main Grid: Fetch lessons from 'http://localhost:5000/api/lessons'.
+       Display each lesson inside a clean card with its Title, Content excerpt, and a prominent "Take Quiz" button.
+    3. Interactive Quiz Modal / View:
+       - Clicking "Take Quiz" opens the quiz view for that lesson.
+       - Display questions with selectable option buttons.
+       - Allow submitting answers, show instant feedback (Correct/Incorrect + Explanation), and calculate score.
+    4. Guard against crashes:
+       - Handle loading state while fetching API.
+       - Ensure options render cleanly even if options is a string array or JSON array.
+       - ALWAYS render buttons with exact text "Take Quiz" for lesson cards.
     """
+    
     agentic_loop(task, target_file="app/frontend/src/App.js")

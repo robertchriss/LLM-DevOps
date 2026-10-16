@@ -1,5 +1,5 @@
 # LLM-DevOps
-
+python generate_k8s_content.py && python loop_orchestrator.py
 Local multi-model software orchestration using Ollama and LiteLLM.
 
 ## Architecture

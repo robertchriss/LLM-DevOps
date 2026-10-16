@@ -1,4 +1,9 @@
--- Create the lessons table
+-- 1. Reset the database state for the test harness
+DROP TABLE IF EXISTS user_scores CASCADE;
+DROP TABLE IF EXISTS quizzes CASCADE;
+DROP TABLE IF EXISTS lessons CASCADE;
+
+-- 2. Create the lessons table
 CREATE TABLE lessons (
     id SERIAL PRIMARY KEY,
     slug VARCHAR UNIQUE NOT NULL,
@@ -7,7 +12,7 @@ CREATE TABLE lessons (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Create the quizzes table with a foreign key reference to lessons
+-- 3. Create the quizzes table
 CREATE TABLE quizzes (
     id SERIAL PRIMARY KEY,
     lesson_id INT REFERENCES lessons(id) ON DELETE CASCADE,
@@ -17,7 +22,7 @@ CREATE TABLE quizzes (
     explanation TEXT NOT NULL
 );
 
--- Create the user_scores table with a foreign key reference to lessons
+-- 4. Create the user_scores table
 CREATE TABLE user_scores (
     id SERIAL PRIMARY KEY,
     username VARCHAR NOT NULL,
@@ -27,11 +32,11 @@ CREATE TABLE user_scores (
     submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Add indexes on 'slug' in lessons table and 'lesson_id' in quizzes table
+-- 5. Add indexes
 CREATE INDEX idx_lessons_slug ON lessons(slug);
 CREATE INDEX idx_quizzes_lesson_id ON quizzes(lesson_id);
 
--- Insert seed data into 'lessons' and 'quizzes' for 'Pods' and 'Deployments'
+-- 6. Insert seed data
 INSERT INTO lessons (slug, title, content) VALUES
 ('k8s-pods', 'Understanding Pods', 'A pod is the smallest deployable unit in Kubernetes...'),
 ('k8s-deployments', 'Managing Deployments', 'A deployment is a Kubernetes resource that manages a set of pods...');

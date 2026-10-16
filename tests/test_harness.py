@@ -1,8 +1,32 @@
 import pytest
 import requests
 import json
+import subprocess
+import os
+import re
 
 BRIDGE_URL = "http://127.0.0.1:8000/api/command"
+
+@pytest.fixture(scope="session", autouse=True)
+def setup_database():
+    """Runs schema.sql before tests to guarantee the DB is seeded."""
+    print("\n📦 Seeding database from schema.sql...")
+    
+    # Adjust this path if your schema.sql is located elsewhere
+    schema_path = os.path.join(os.path.dirname(__file__), "..", "schema.sql")
+    
+    if os.path.exists(schema_path):
+        # Execute the SQL file against your local Postgres instance
+        # If using Docker, change to: ["docker", "exec", "-i", "k8s-quiz-db", "psql", "-U", "postgres", "-d", "quizdb", "-f", schema_path]
+        result = subprocess.run(
+            ["psql", "-h", "localhost", "-U", "postgres", "-d", "quizdb", "-f", schema_path],
+            capture_output=True,
+            text=True
+        )
+        if result.returncode != 0:
+            print(f"⚠️ Database seed warning: {result.stderr}")
+    else:
+        print("⚠️ schema.sql not found, skipping database setup.")
 
 def test_sql_generation_validity():
     """Harness Test 1: Verify agent bridge generates valid SQL structure without conversational fluff."""
@@ -133,7 +157,7 @@ def test_quiz_ui_interaction(page):
 
     # 3. Find and click the 'Take Quiz' button
     try:
-        quiz_button = page.get_by_text("Take Quiz", ignore_case=True).first
+        quiz_button = page.get_by_text(re.compile(r"Take Quiz", re.I)).first
         quiz_button.wait_for(state="visible", timeout=10000)
         quiz_button.click()
     except Exception:
