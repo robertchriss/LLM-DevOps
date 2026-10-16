@@ -50,6 +50,10 @@ python orchestrator.py --prompt "Create a FastAPI health endpoint" --output "scr
 
 The output path must be relative to `LLM_DEVOPS_WORKSPACE` (defaults to the current directory).
 
+## Autonomous coding tasks (local models)
+
+See [README-HARNESS.md](README-HARNESS.md) for the local Ollama coding harness, background task submission, run-status/event polling, configuration, and safety limitations. Submit work to `POST /api/harness/runs`; tasks are queued against one workspace to avoid concurrent file writes.
+
 ## Run the API bridge
 
 ```bash
