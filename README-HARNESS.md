@@ -1,63 +1,80 @@
 # Autonomous coding harness
 
-This adds a bounded plan → propose complete-file changes → judge → apply → verify → repair loop.
+This provides a bounded local-model coding loop: retrieve project context → plan → propose complete-file changes → judge → apply → verify → repair. The API bridge can run long tasks in the background and report progress while you work on something else.
+
+## Free/local model setup
+
+The default setup uses Ollama on your own machine. It does not require paid model API keys or usage-based API billing. Downloading and running models still requires disk space, memory, and compute.
+
+Install the Python requirements:
+
+```bash
+python -m pip install -r requirements-harness.txt
+```
+
+Pull the local models you want to use (choose models that fit your hardware):
+
+```bash
+ollama pull qwen2.5:7b
+ollama pull qwen2.5:14b
+ollama pull deepseek-r1:14b
+ollama pull qwen2.5:32b
+```
+
+Configure the variables in `.env.harness.example` in your shell before starting the bridge. Python does not load that file automatically. In particular:
+
+- `PROJECT_WORKSPACE`: exact repository directory the agent may edit.
+- `OLLAMA_BASE_URL`: local Ollama endpoint.
+- `OLLAMA_FAST_MODEL`, `OLLAMA_WORKER_MODELS`, `OLLAMA_JUDGE_MODEL`: model names already pulled into Ollama.
+- `USE_JUDGE=true`: require a separate judge pass before applying changes.
+- `HARNESS_MAX_ITERATIONS`, `HARNESS_MAX_TASKS`: bound repair and planning loops.
+
+Start the bridge:
+
+```bash
+python agent_bridge.py
+```
+
+The default bind is `127.0.0.1:8000`. Set a strong `LLM_DEVOPS_API_TOKEN` before making the API reachable from another machine. Do not expose it to the public internet without authentication, TLS, firewall restrictions, and a restricted service account.
+
+## Submit a long-running task
+
+Submit a goal and return immediately with a run ID:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/harness/runs \
+  -H 'Content-Type: application/json' \
+  -d '{"goal":"Review the API for bugs, add focused tests, and fix issues without changing unrelated behavior.","include_web":false}'
+```
+
+The response includes `id`, `status_url`, and `events_url`. Poll them while the task runs:
+
+```bash
+curl http://127.0.0.1:8000/api/harness/runs/<RUN_ID>
+curl http://127.0.0.1:8000/api/harness/runs/<RUN_ID>/events
+curl http://127.0.0.1:8000/api/harness/runs
+```
+
+Add the same `Authorization: Bearer <LLM_DEVOPS_API_TOKEN>` header to requests if a token is configured. The events endpoint returns the current event list; poll it periodically to see planning, edits, verification, and repair attempts. `include_web` defaults to false so a normal coding task can stay local and avoid external search.
+
+## Concurrency and task state
+
+The bridge accepts multiple queued tasks but deliberately runs them one at a time against the configured workspace. This prevents agents from overwriting each other's files. Run status and events are kept in memory, so restarting the bridge loses the history. True parallel execution should use a separate Git worktree or disposable clone per task; do not point multiple independent writers at the same checkout.
+
+This implementation does not automatically create, merge, or babysit GitHub pull requests. After reviewing the diff and tests, create a branch/PR using your normal Git workflow. PR automation, independent reviewer agents, and post-merge rollback monitoring are follow-on steps, not features this API claims to provide.
 
 ## Safety boundary
 
-Set `PROJECT_WORKSPACE` to the repository root. The harness rejects absolute paths, traversal, common dependency/build directories, and symlink path components. File changes are written only beneath that root. The verification runner uses argument arrays rather than a shell and has an executable allowlist.
+The harness rejects absolute paths, traversal, common dependency/build directories, and symlink path components. File changes are written only beneath `PROJECT_WORKSPACE`. Verification commands use argument arrays rather than a shell and have an executable allowlist.
 
-**Important:** A process launched by an allowed program can still do arbitrary work. For example, project test/build scripts execute code. Run this harness only against a trusted repository in a disposable branch/worktree or container. The workspace guard is not an OS sandbox and cannot guarantee protection against malicious code, filesystem races, or a process intentionally escaping its working directory. Keep the API on localhost. Review the diff and commit yourself.
+**This is not an OS sandbox.** A process launched by an allowed program can still execute project code; test and build scripts may have arbitrary side effects. Run against a trusted repository in a disposable branch/worktree or container. Review the diff and test output before merging. Model approval is not proof of correctness.
 
-## Install and configure
+## Verification
 
-Install the packages in `requirements-harness.txt`. Set environment variables from `.env.harness.example`; this sample does not load `.env` automatically unless you add `python-dotenv` and call `load_dotenv()` before reading settings.
+Run the isolated harness/path tests:
 
-`PROJECT_WORKSPACE` must be the exact repository directory to modify. Do not set it to a parent folder containing several projects.
-
-## API integration
-
-Import `CodingHarness` into `agent_bridge.py`, construct it using your environment settings, and add an endpoint that awaits `harness.run(goal, include_web)`. Expose run status and events from `harness.runs` and `harness.events` in your API. Do not replace the existing `/v1/chat/completions` endpoint: Continue uses it for normal chat completions.
-
-Example construction:
-
-```python
-from harness import CodingHarness
-
-coding_harness = CodingHarness(
-    root=os.getenv("PROJECT_WORKSPACE", "."),
-    ollama_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
-    fast_model=os.getenv("OLLAMA_FAST_MODEL", "qwen2.5:7b"),
-    worker_models=os.getenv("OLLAMA_WORKER_MODELS", "qwen2.5:14b,deepseek-r1:14b").split(","),
-    judge_model=os.getenv("OLLAMA_JUDGE_MODEL", "qwen2.5:32b"),
-    use_judge=os.getenv("USE_JUDGE", "true").lower() in {"1", "true", "yes"},
-    max_iterations=int(os.getenv("HARNESS_MAX_ITERATIONS", "3")),
-    max_tasks=int(os.getenv("HARNESS_MAX_TASKS", "12")),
-    command_timeout=int(os.getenv("HARNESS_COMMAND_TIMEOUT", "120")),
-    model_timeout=int(os.getenv("HARNESS_MODEL_TIMEOUT", "180")),
-)
+```bash
+python -m pytest tests/test_harness_paths.py -q
 ```
 
-Endpoint sketch:
-
-```python
-from pydantic import BaseModel, Field
-
-class HarnessRequest(BaseModel):
-    goal: str = Field(min_length=1, max_length=12000)
-    include_web: bool = False
-
-@app.post("/api/harness/run")
-async def start_harness(req: HarnessRequest):
-    # This waits for completion; for background execution, wrap in asyncio.create_task
-    # and return a run id, as the existing /api/command endpoint does.
-    return await coding_harness.run(req.goal, req.include_web)
-```
-
-This synchronous endpoint example is intentionally simple. To stream progress, adapt the existing SSE endpoint to read `coding_harness.events[run_id]`. For a production UI, make the run backgrounded and expose `/api/harness/runs/{run_id}` and `/api/harness/runs/{run_id}/events`.
-
-## Current limitations
-
-- Uses the fast model to plan and propose edits; judge checks the proposed patch. Worker-model consensus and independent code review can be added later.
-- Model output must be JSON with complete file contents; malformed output fails closed.
-- Verification commands must be explicitly allowlisted. Avoid letting model output choose arbitrary shell commands.
-- Take a backup/branch before the first run. Inspect diffs before committing.
+The repository also contains tests that expect a running bridge, local Ollama models, browser tooling, or database services; those are integration tests and are not covered by the command above.
