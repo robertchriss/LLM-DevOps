@@ -5,3 +5,9 @@ app/backend/node_modules/
 .tmp*
 *.log
 .venv/
+# Runtime state for the local agent task manager
+.llm_devops_tasks.sqlite3
+.llm_devops_tasks.sqlite3-shm
+.llm_devops_tasks.sqlite3-wal
+rag-*.sqlite3
+research-*.sqlite3
