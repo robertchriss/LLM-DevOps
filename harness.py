@@ -271,8 +271,9 @@ class CodingHarness:
             results.append(await self._run_check(command))
         return results
 
-    async def run(self, goal: str, include_web: bool = False) -> dict[str, Any]:
-        run_id = str(uuid.uuid4())
+    async def run(self, goal: str, include_web: bool = False, run_id: str | None = None) -> dict[str, Any]:
+        """Run one bounded task; callers may supply an ID for background job tracking."""
+        run_id = run_id or str(uuid.uuid4())
         self.runs[run_id] = {"id": run_id, "status": "running", "goal": goal, "created_at": time.time()}
         self.events[run_id] = []
         self._emit(run_id, "started", {"goal": goal})
