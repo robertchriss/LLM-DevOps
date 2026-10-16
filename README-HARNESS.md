@@ -65,7 +65,7 @@ The events endpoint returns durable events with sequence numbers; pass ?after=<l
 ## Task controls
 
 - POST /api/harness/runs/{id}/retry — explicitly retry a failed/interrupted task.
-- POST /api/harness/runs/{id}/settle — remove a completed task from the default inbox and clean up its local worktree. Active tasks cannot be settled.
+- POST /api/harness/runs/{id}/settle — archive a task out of the default inbox without deleting its worktree or branch. Active tasks cannot be settled.
 - POST /api/harness/runs/{id}/snooze with {"seconds":3600} — pause PR-monitor attention temporarily.
 - POST /api/harness/runs/{id}/resume — resume PR monitoring.
 - GET /api/harness/runs?include_settled=true — include settled tasks.
