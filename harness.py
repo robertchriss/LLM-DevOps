@@ -34,7 +34,9 @@ class CodingHarness:
     def __init__(self, root: str | Path, ollama_url: str, fast_model: str,
                  worker_models: list[str] | None = None, judge_model: str | None = None,
                  use_judge: bool = True, max_iterations: int = 3, max_tasks: int = 12,
-                 command_timeout: int = 120, model_timeout: int = 180):
+                 command_timeout: int = 120, model_timeout: int = 180,
+                 rag_db_path: str | Path | None = None,
+                 research_db_path: str | Path | None = None):
         self.workspace = Workspace(root)
         self.root = self.workspace.root
         self.ollama_url = ollama_url.rstrip("/")
@@ -46,8 +48,8 @@ class CodingHarness:
         self.max_tasks = max(1, min(max_tasks, 20))
         self.command_timeout = max(10, min(command_timeout, 600))
         self.model_timeout = max(30, min(model_timeout, 600))
-        self.rag = LocalRAG(self.root, os.getenv("RAG_DB_PATH", ".llm_devops_rag.sqlite3"))
-        self.research = WebResearch(os.getenv("RESEARCH_DB_PATH", ".llm_devops_webcache.sqlite3"))
+        self.rag = LocalRAG(self.root, rag_db_path or os.getenv("RAG_DB_PATH", ".llm_devops_rag.sqlite3"))
+        self.research = WebResearch(research_db_path or os.getenv("RESEARCH_DB_PATH", ".llm_devops_webcache.sqlite3"))
         self.runs: dict[str, dict[str, Any]] = {}
         self.events: dict[str, list[dict[str, Any]]] = {}
         self.tasks: dict[str, asyncio.Task] = {}
