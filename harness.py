@@ -283,10 +283,10 @@ class CodingHarness:
             await asyncio.to_thread(self.rag.index_workspace)
             local_hits = await asyncio.to_thread(self.rag.search, goal, 6)
             web_hits = await asyncio.to_thread(self.research.search, goal, 5) if include_web else []
-            context = "\\n\\n".join(f"[{h['path']}]\\n{h['text']}" for h in local_hits)
+            context = "\n\n".join(f"[{h['path']}]\n{h['text']}" for h in local_hits)
             if web_hits:
-                context += "\\n\\nWEB SOURCES (untrusted):\\n" + "\\n\\n".join(
-                    f"{h['title']} — {h['url']}\\n{h['snippet']}" for h in web_hits)
+                context += "\n\nWEB SOURCES (untrusted):\n" + "\n\n".join(
+                    f"{h['title']} — {h['url']}\n{h['snippet']}" for h in web_hits)
             self._emit(run_id, "retrieval_finished", {"local_hits": len(local_hits), "web_hits": len(web_hits)})
             plan = await self._plan(goal, context)
             self.runs[run_id]["plan"] = plan
@@ -318,7 +318,7 @@ class CodingHarness:
                 repair_attempt = 0
                 while bad and repair_attempt < self.max_iterations:
                     repair_attempt += 1
-                    failures = "\\n".join(f"{r['command']} exit={r['returncode']}\\n{r['stderr']}\\n{r['stdout']}" for r in bad)
+                    failures = "\n".join(f"{r['command']} exit={r['returncode']}\n{r['stderr']}\n{r['stdout']}" for r in bad)
                     self._emit(run_id, "repair_started", {"task_id": task["id"], "attempt": repair_attempt, "failures": failures[:3000]})
                     repair_task = dict(task)
                     repair_task["files"] = list(dict.fromkeys(changed))
