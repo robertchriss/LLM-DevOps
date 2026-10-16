@@ -18,7 +18,7 @@ def test_accepts_repo_relative_path(tmp_path):
 
 def test_normalizes_windows_relative_paths(tmp_path):
     h = CodingHarness(tmp_path, "http://localhost:11434", "fake", use_judge=False)
-    assert h._safe_relative(r"src\\main.py") == "src/main.py"
+    assert h._safe_relative(r"src\main.py") == "src/main.py"
 
 
 def test_extracts_json_from_fenced_model_response(tmp_path):
