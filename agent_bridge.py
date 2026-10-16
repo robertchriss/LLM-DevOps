@@ -39,29 +39,19 @@ MAX_PROMPT_CHARS = int(os.getenv("LLM_DEVOPS_MAX_PROMPT_CHARS", "30000"))
 MAX_FILE_BYTES = int(os.getenv("LLM_DEVOPS_MAX_FILE_BYTES", "1000000"))
 
 HARNESS_WORKSPACE = Path(os.getenv("PROJECT_WORKSPACE", str(WORKSPACE))).resolve()
-HARNESS_QUEUE_LIMIT = max(1, int(os.getenv("HARNESS_QUEUE_LIMIT", "8")))
-coding_harness = CodingHarness(
-    root=HARNESS_WORKSPACE,
-    ollama_url=OLLAMA_BASE,
-    fast_model=os.getenv("OLLAMA_FAST_MODEL", "qwen2.5:7b"),
-    worker_models=[
-        model.strip()
-        for model in os.getenv(
-            "OLLAMA_WORKER_MODELS", "qwen2.5:14b,deepseek-r1:14b"
-        ).split(",")
-        if model.strip()
-    ],
-    judge_model=os.getenv("OLLAMA_JUDGE_MODEL", QWEN_32B),
-    use_judge=os.getenv("USE_JUDGE", "true").lower() in {"1", "true", "yes"},
-    max_iterations=int(os.getenv("HARNESS_MAX_ITERATIONS", "3")),
-    max_tasks=int(os.getenv("HARNESS_MAX_TASKS", "12")),
-    command_timeout=int(os.getenv("HARNESS_COMMAND_TIMEOUT", "120")),
-    model_timeout=int(os.getenv("HARNESS_MODEL_TIMEOUT", "180")),
-)
-# The harness edits one shared working tree. Queue runs instead of allowing concurrent
-# writers to race and overwrite one another's file snapshots.
-HARNESS_JOBS: dict[str, dict] = {}
-HARNESS_RUN_LOCK = asyncio.Lock()
+from task_manager import TaskManager
+
+task_manager = TaskManager(HARNESS_WORKSPACE)
+
+
+@app.on_event("startup")
+async def start_task_manager() -> None:
+    await task_manager.start()
+
+
+@app.on_event("shutdown")
+async def stop_task_manager() -> None:
+    await task_manager.stop()
 
 
 class StrictRequest(BaseModel):
@@ -244,83 +234,76 @@ async def chat_completions(request: Request):
 
 
 
-async def _execute_harness_job(run_id: str) -> None:
-    job = HARNESS_JOBS[run_id]
-    # FIFO lock acquisition serializes filesystem writers in the shared workspace.
-    async with HARNESS_RUN_LOCK:
-        job.update(status="running", started_at=time.time())
-        try:
-            result = await coding_harness.run(
-                job["goal"], include_web=job["include_web"], run_id=run_id
-            )
-            job.update(status=result.get("status", "failed"), result=result)
-        except Exception as exc:
-            job.update(status="failed", error=str(exc))
-        finally:
-            job["finished_at"] = time.time()
-
-
 @app.post("/api/harness/runs", status_code=202, dependencies=[Depends(require_auth)])
 async def start_harness_run(req: HarnessRunRequest):
-    goal = req.goal.strip()
-    if not goal:
-        raise HTTPException(status_code=400, detail="goal cannot be empty")
-    active = sum(1 for job in HARNESS_JOBS.values() if job["status"] in {"queued", "running"})
-    if active >= HARNESS_QUEUE_LIMIT:
-        raise HTTPException(
-            status_code=429,
-            detail=f"Harness queue is full ({HARNESS_QUEUE_LIMIT} queued/running jobs).",
-        )
-    # Bound in-memory status history without removing active work.
-    completed = [
-        key for key, job in HARNESS_JOBS.items()
-        if job["status"] not in {"queued", "running"}
-    ]
-    for key in completed[:-100]:
-        HARNESS_JOBS.pop(key, None)
-        coding_harness.runs.pop(key, None)
-        coding_harness.events.pop(key, None)
-    run_id = str(uuid.uuid4())
-    HARNESS_JOBS[run_id] = {
-        "id": run_id, "goal": goal, "include_web": req.include_web,
-        "status": "queued", "created_at": time.time(),
-    }
-    asyncio.create_task(_execute_harness_job(run_id), name=f"harness-{run_id}")
-    return {
-        "id": run_id, "status": "queued",
-        "message": "Task accepted. Runs are queued to prevent concurrent writes to the same workspace.",
-        "status_url": f"/api/harness/runs/{run_id}",
-        "events_url": f"/api/harness/runs/{run_id}/events",
-    }
+    try:
+        return await task_manager.submit(req.goal, req.include_web)
+    except OverflowError as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from None
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
 
 
 @app.get("/api/harness/runs", dependencies=[Depends(require_auth)])
-async def list_harness_runs():
-    return {
-        "runs": sorted(HARNESS_JOBS.values(), key=lambda item: item["created_at"], reverse=True)
-    }
+async def list_harness_runs(include_settled: bool = False):
+    return {"runs": task_manager.list(include_settled=include_settled)}
 
 
 @app.get("/api/harness/runs/{run_id}/events", dependencies=[Depends(require_auth)])
-async def get_harness_run_events(run_id: str):
-    job = HARNESS_JOBS.get(run_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail="Harness run not found")
-    events = list(coding_harness.events.get(run_id, []))
-    if job["status"] == "queued" and not events:
-        events = [{
-            "id": f"{run_id}:queued", "time": job["created_at"],
-            "event": "queued", "data": {"goal": job["goal"]},
-        }]
-    return {"run_id": run_id, "status": job["status"], "events": events}
+async def get_harness_run_events(run_id: str, after: int = 0):
+    task = task_manager.get(run_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return {"run_id": run_id, "status": task["status"], "events": task_manager.events(run_id, after=max(0, after))}
 
 
 @app.get("/api/harness/runs/{run_id}", dependencies=[Depends(require_auth)])
 async def get_harness_run(run_id: str):
-    job = HARNESS_JOBS.get(run_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail="Harness run not found")
-    return {**job, "events": coding_harness.events.get(run_id, [])}
+    task = task_manager.get(run_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    task["events"] = task_manager.events(run_id)
+    return task
+
+
+@app.post("/api/harness/runs/{run_id}/retry", dependencies=[Depends(require_auth)])
+async def retry_harness_run(run_id: str):
+    try:
+        return await task_manager.retry(run_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Task not found") from None
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+
+
+@app.post("/api/harness/runs/{run_id}/settle", dependencies=[Depends(require_auth)])
+async def settle_harness_run(run_id: str):
+    try:
+        return task_manager.settle(run_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Task not found") from None
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+
+
+class SnoozeRequest(StrictRequest):
+    seconds: int = Field(default=3600, ge=60, le=2592000)
+
+
+@app.post("/api/harness/runs/{run_id}/snooze", dependencies=[Depends(require_auth)])
+async def snooze_harness_run(run_id: str, req: SnoozeRequest):
+    try:
+        return task_manager.snooze(run_id, req.seconds)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Task not found") from None
+
+
+@app.post("/api/harness/runs/{run_id}/resume", dependencies=[Depends(require_auth)])
+async def resume_harness_run(run_id: str):
+    try:
+        return task_manager.resume(run_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Task not found") from None
 
 
 @app.post("/api/file/read", dependencies=[Depends(require_auth)])
