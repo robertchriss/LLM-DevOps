@@ -7,6 +7,24 @@ class UnsafePathError(Exception):
     pass
 
 
+class Workspace:
+    """Small workspace facade shared by the autonomous coding harness."""
+
+    def __init__(self, root: Path | str):
+        self.root = Path(root).resolve()
+        if not self.root.exists() or not self.root.is_dir():
+            raise ValueError(f"Workspace root is not a directory: {self.root}")
+
+    def resolve(self, relative_path: str) -> Path:
+        return resolve_safe_path(self.root, relative_path)
+
+    def read_text(self, relative_path: str, max_bytes: int = 1_000_000) -> str:
+        return read_workspace_file(self.root, relative_path, max_bytes=max_bytes)
+
+    def write_text(self, relative_path: str, content: str, max_bytes: int = 1_000_000) -> None:
+        write_workspace_file(self.root, relative_path, content, max_bytes=max_bytes)
+
+
 def resolve_safe_path(workspace_root: Path | str, target_path: str) -> Path:
     """Resolve target_path relative to workspace_root and ensure it stays within bounds."""
     root = Path(workspace_root).resolve()
