@@ -189,10 +189,10 @@ class TaskManager:
             raise KeyError("Task not found")
         if task["status"] in ACTIVE:
             raise ValueError("Cannot settle an active task; wait for it to stop first")
+        # Settling is an inbox/archive operation, not destructive cleanup. Preserve
+        # local worktrees and branches so unpushed or failed work remains recoverable.
         self._update(task_id, status="settled", settled=1)
-        self._event(task_id, "settled", {})
-        if task.get("worktree"):
-            self._remove_worktree(Path(task["worktree"]), task.get("branch"))
+        self._event(task_id, "settled", {"worktree_preserved": bool(task.get("worktree"))})
         return self.get(task_id) or {}
 
     def snooze(self, task_id: str, seconds: int) -> dict[str, Any]:
