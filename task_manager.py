@@ -230,7 +230,7 @@ class TaskManager:
             rag_db_path=self.db_path.parent / f"rag-{db_stem}.sqlite3",
             research_db_path=self.db_path.parent / f"research-{db_stem}.sqlite3",
             ollama_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
-            fast_model=os.getenv("OLLAMA_FAST_MODEL", "qwen2.5:7b"),
+            fast_model=os.getenv("OLLAMA_FAST_MODEL", "qwen2.5:14b"),
             worker_models=[m.strip() for m in os.getenv("OLLAMA_WORKER_MODELS", "qwen2.5:14b,deepseek-r1:14b").split(",") if m.strip()],
             judge_model=os.getenv("OLLAMA_JUDGE_MODEL", os.getenv("LLM_DEVOPS_JUDGE_MODEL", "qwen2.5:32b")),
             use_judge=os.getenv("USE_JUDGE", "true").lower() in {"1", "true", "yes"},
